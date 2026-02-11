@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WooCommerce Stock Sync - Dwenn
  * Description: Upload a CSV in wp-admin to update WooCommerce product/variation stock + price. Uses one DB lookup for SKUs, then processes in AJAX chunks with progress bar. Stores job in transient (auto-expiring) and deletes on finish/cancel. No CSV left on disk. Includes optional "Pre-zero stock by category" before sync.
- * Version: 1.3.0
+ * Version: 1.3.1
  * Author: Dwenn Kaufmann
  * Author URI: https://dwenn.ch
  * Update URI: false

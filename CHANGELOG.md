@@ -21,6 +21,15 @@ Versions use SemVer: MAJOR.MINOR.PATCH.
 
 ---
 
+## [1.3.1] - 2026-02-11
+### Added
+- Small UI: disable pre-zero category checkboxes until pre-zero is enabled (client-side).
+
+### Changed
+- Audit: verified nonce usage for form (`wcssd_create_job`) and AJAX (`wcssd_ajax`) endpoints and ensured handlers call `check_admin_referer`/`check_ajax_referer`.
+- Bumped plugin header version to `1.3.1`.
+
+
 ## [1.2.0] - YYYY-MM-DD
 ### Added
 - (Describe changes…)
