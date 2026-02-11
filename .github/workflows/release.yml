@@ -1,0 +1,29 @@
+name: Build & Release Plugin ZIP
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build ZIP
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ZIP="wc-stock-sync-dwenn-${VERSION}.zip"
+          zip -r "$ZIP" wc-stock-sync-dwenn -x "*.DS_Store" -x "__MACOSX/*"
+          echo "ZIP_NAME=$ZIP" >> $GITHUB_ENV
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.ZIP_NAME }}
+          generate_release_notes: true
