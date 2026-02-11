@@ -259,11 +259,11 @@ class WCSSD_WooCommerce_Stock_Sync_Dwenn {
                 <th scope="row">Pré-traitement</th>
                 <td>
                   <label style="display:block;margin-bottom:8px;">
-                    <input type="checkbox" name="wcssd_prezero_enable" value="1" />
+                    <input type="checkbox" id="wcssd_prezero_enable" name="wcssd_prezero_enable" value="1" />
                     Mettre le stock à <strong>0</strong> pour certains produits <strong>avant</strong> la sync (utile si des SKU disparaissent du CSV)
                   </label>
 
-                  <div style="padding:10px;border:1px solid #dcdcde;border-radius:10px;max-height:220px;overflow:auto;background:#fafafa;">
+                  <div id="wcssd_prezero_cats_container" style="padding:10px;border:1px solid #dcdcde;border-radius:10px;max-height:220px;overflow:auto;background:#fafafa;">
                     <strong>Catégories à mettre à zéro :</strong>
                     <div style="margin-top:8px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 14px;">
                       <?php foreach ($cats as $c): ?>
@@ -515,6 +515,20 @@ class WCSSD_WooCommerce_Stock_Sync_Dwenn {
 
       area.style.display = jobId ? 'block' : 'none';
       initResume();
+
+      // Pre-zero categories toggle: disable category checkboxes until pre-zero enabled
+      (function(){
+        const prezeroEnable = document.getElementById('wcssd_prezero_enable');
+        const prezeroCats = Array.from(document.querySelectorAll('input[name="wcssd_prezero_cats[]"]'));
+        function setPrezeroState() {
+          const enabled = prezeroEnable && prezeroEnable.checked;
+          prezeroCats.forEach(function(i){ i.disabled = !enabled; });
+        }
+        if (prezeroEnable) {
+          setPrezeroState();
+          prezeroEnable.addEventListener('change', setPrezeroState);
+        }
+      })();
 
       const url = new URL(window.location.href);
       const fromJob = url.searchParams.get('wcssd_job');
