@@ -6,6 +6,17 @@ Versions use SemVer: MAJOR.MINOR.PATCH.
 
 ---
 
+## [1.3.2] - 2026-03-23
+### Fixed
+- Hardened numeric parsing for CSV price and stock values so common formats like `1,299.00`, `1.299,00`, spaces, and apostrophes do not get misread.
+- Improved admin-side AJAX error handling so network/server failures show a clear notice instead of silently stalling.
+- Switched CSV row parsing to `fgetcsv()` to better support valid quoted CSV rows.
+
+### Changed
+- Bumped plugin header version to `1.3.2`.
+
+---
+
 ## [1.3.0] - 2026-02-11
 ### Added
 - AJAX chunk processing with progress UI (progress bar + live counters).

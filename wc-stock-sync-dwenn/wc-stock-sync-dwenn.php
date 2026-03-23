@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WooCommerce Stock Sync - Dwenn
  * Description: Upload a CSV in wp-admin to update WooCommerce product/variation stock + price. Uses one DB lookup for SKUs, then processes in AJAX chunks with progress bar. Stores job in transient (auto-expiring) and deletes on finish/cancel. No CSV left on disk. Includes optional "Pre-zero stock by category" before sync.
- * Version: 1.3.1
+ * Version: 1.3.2
  * Author: Dwenn Kaufmann
  * Author URI: https://dwenn.ch
  * Update URI: false
@@ -61,21 +61,97 @@ class WCSSD_WooCommerce_Stock_Sync_Dwenn {
     return wp_generate_password(20, false, false);
   }
 
+  private function normalize_numeric_string($value) {
+    $value = trim((string)$value);
+    if ($value === '') return '';
+
+    $value = str_replace(["\xC2\xA0", "\xE2\x80\xAF", ' ', "'"], ['', '', '', ''], $value);
+    $value = preg_replace('/[^0-9,.\-]/u', '', $value);
+    if ($value === '' || $value === '-') return '';
+
+    $last_dot   = strrpos($value, '.');
+    $last_comma = strrpos($value, ',');
+    $decimal_sep = null;
+
+    if ($last_dot !== false && $last_comma !== false) {
+      $decimal_sep = ($last_dot > $last_comma) ? '.' : ',';
+    } elseif ($last_dot !== false || $last_comma !== false) {
+      $sep = ($last_dot !== false) ? '.' : ',';
+      $pos = ($sep === '.') ? $last_dot : $last_comma;
+      $digits_after = strlen($value) - $pos - 1;
+
+      // A single separator with 1-2 trailing digits is most likely a decimal separator.
+      if ($digits_after > 0 && $digits_after <= 2) {
+        $decimal_sep = $sep;
+      }
+    }
+
+    if ($decimal_sep !== null) {
+      $thousands_sep = ($decimal_sep === '.') ? ',' : '.';
+      $value = str_replace($thousands_sep, '', $value);
+
+      if (substr_count($value, $decimal_sep) > 1) {
+        $parts = explode($decimal_sep, $value);
+        $decimal = array_pop($parts);
+        $value = implode('', $parts) . '.' . $decimal;
+      } else {
+        $value = str_replace($decimal_sep, '.', $value);
+      }
+    } else {
+      $value = str_replace([',', '.'], '', $value);
+    }
+
+    return $value;
+  }
+
   private function normalize_price($p) {
-    $p = trim((string)$p);
-    if ($p === '') return '0.00';
-    $p = str_replace([' ', "'"], ['', ''], $p);
-    $p = str_replace(',', '.', $p);
+    $p = $this->normalize_numeric_string($p);
+    if ($p === '' || !is_numeric($p)) return '0.00';
     $f = floatval($p);
     return number_format($f, 2, '.', '');
   }
 
   private function normalize_stock($s) {
-    $s = trim((string)$s);
-    if ($s === '') return 0;
-    $s = str_replace([' ', "'"], ['', ''], $s);
+    $s = $this->normalize_numeric_string($s);
+    if ($s === '' || !is_numeric($s)) return 0;
     $f = floatval($s);
     return (int)round($f);
+  }
+
+  private function normalize_csv_header($header) {
+    $header = preg_replace('/^\xEF\xBB\xBF/', '', trim((string)$header));
+    if ($header === '') return '';
+
+    $header = strtolower($header);
+    return preg_replace('/[^a-z0-9]+/', '', $header);
+  }
+
+  private function build_csv_header_map(array $headers) {
+    $normalized_headers = [];
+    foreach ($headers as $idx => $header) {
+      $key = $this->normalize_csv_header($header);
+      if ($key !== '' && !isset($normalized_headers[$key])) {
+        $normalized_headers[$key] = $idx;
+      }
+    }
+
+    $aliases = [
+      'sku' => ['sku'],
+      'available' => ['available', 'stock', 'qty', 'quantity'],
+      'price' => ['price', 'regularprice'],
+    ];
+
+    $resolved = [];
+    foreach ($aliases as $canonical => $keys) {
+      foreach ($keys as $key) {
+        if (isset($normalized_headers[$key])) {
+          $resolved[$canonical] = $normalized_headers[$key];
+          break;
+        }
+      }
+    }
+
+    return $resolved;
   }
 
   /**
@@ -239,7 +315,8 @@ class WCSSD_WooCommerce_Stock_Sync_Dwenn {
         <div style="background:#fff;border:1px solid #dcdcde;border-radius:12px;padding:16px 16px 8px 16px;margin-bottom:16px;">
           <h2 style="margin-top:0;">Upload CSV</h2>
           <p style="margin-top:0;color:#50575e;">
-            Required columns: <code>Sku</code>, <code>Available</code>, <code>Price</code>.
+            Required columns used by the sync: <code>Sku</code>, <code>Available</code>, <code>Price</code>.
+            Extra columns are ignored and header matching is flexible.
             Only SKUs that exist in WooCommerce will be updated.
           </p>
 
@@ -424,23 +501,48 @@ class WCSSD_WooCommerce_Stock_Sync_Dwenn {
 
       async function post(params) {
         const body = new URLSearchParams(params);
-        const res = await fetch(ajaxUrl, {
-          method: 'POST',
-          credentials: 'same-origin',
-          headers: {'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'},
-          body
-        });
-        return res.json();
+        let res;
+
+        try {
+          res = await fetch(ajaxUrl, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'},
+            body
+          });
+        } catch (error) {
+          throw new Error('Network error. Please retry.');
+        }
+
+        let data;
+        try {
+          data = await res.json();
+        } catch (error) {
+          throw new Error('Unexpected server response.');
+        }
+
+        if (!res.ok && (!data || !data.data || !data.data.message)) {
+          throw new Error('HTTP error ' + res.status + '.');
+        }
+
+        return data;
       }
 
       async function tick() {
         if (!running || !jobId) return;
 
-        const data = await post({
-          action: 'wcssd_run_chunk',
-          _wpnonce: nonceAjax,
-          job_id: jobId
-        });
+        let data;
+        try {
+          data = await post({
+            action: 'wcssd_run_chunk',
+            _wpnonce: nonceAjax,
+            job_id: jobId
+          });
+        } catch (error) {
+          running = false;
+          setNotice('error', (error && error.message) ? error.message : 'AJAX error.');
+          return;
+        }
 
         if (!data || !data.success) {
           running = false;
@@ -478,11 +580,17 @@ class WCSSD_WooCommerce_Stock_Sync_Dwenn {
         if (!jobId) return;
         running = false;
 
-        const data = await post({
-          action: 'wcssd_cancel_job',
-          _wpnonce: nonceAjax,
-          job_id: jobId
-        });
+        let data;
+        try {
+          data = await post({
+            action: 'wcssd_cancel_job',
+            _wpnonce: nonceAjax,
+            job_id: jobId
+          });
+        } catch (error) {
+          setNotice('error', (error && error.message) ? error.message : 'Cancel failed.');
+          return;
+        }
 
         if (data && data.success) {
           setNotice('success', 'Job cancelled and cleaned up.');
@@ -500,12 +608,18 @@ class WCSSD_WooCommerce_Stock_Sync_Dwenn {
         area.style.display = 'block';
         setNotice('info', 'Resumable job detected. Click Start/Resume.');
 
-        const data = await post({
-          action: 'wcssd_run_chunk',
-          _wpnonce: nonceAjax,
-          job_id: jobId,
-          peek: '1'
-        });
+        let data;
+        try {
+          data = await post({
+            action: 'wcssd_run_chunk',
+            _wpnonce: nonceAjax,
+            job_id: jobId,
+            peek: '1'
+          });
+        } catch (error) {
+          setNotice('error', (error && error.message) ? error.message : 'Resume failed.');
+          return;
+        }
 
         if (data && data.success) {
           updateUI(data.data.state);
@@ -617,23 +731,25 @@ class WCSSD_WooCommerce_Stock_Sync_Dwenn {
     }
 
     // Support UTF-8 BOM
-    $first = fgets($handle);
-    if ($first === false) {
+    $headers = fgetcsv($handle);
+    if ($headers === false) {
       fclose($handle);
       wp_die('CSV appears empty.');
     }
-    $first = preg_replace('/^\xEF\xBB\xBF/', '', $first);
-    $headers = str_getcsv($first);
-
-    $required = ['Sku', 'Available', 'Price'];
-    $header_map = [];
-    foreach ($headers as $idx => $h) {
-      $header_map[trim($h)] = $idx;
+    if (!empty($headers[0])) {
+      $headers[0] = preg_replace('/^\xEF\xBB\xBF/', '', (string)$headers[0]);
     }
-    foreach ($required as $col) {
-      if (!isset($header_map[$col])) {
+
+    $required = [
+      'sku' => 'Sku',
+      'available' => 'Available',
+      'price' => 'Price',
+    ];
+    $header_map = $this->build_csv_header_map($headers);
+    foreach ($required as $key => $label) {
+      if (!isset($header_map[$key])) {
         fclose($handle);
-        wp_die('Missing required column: ' . esc_html($col));
+        wp_die('Missing required column: ' . esc_html($label));
       }
     }
 
@@ -658,13 +774,12 @@ class WCSSD_WooCommerce_Stock_Sync_Dwenn {
     $adjust_amount = ($posted_amount !== null) ? floatval($posted_amount) : floatval($saved_amount);
     $adjust_round  = $posted_round;
 
-    while (($line = fgets($handle)) !== false) {
-      $cols = str_getcsv($line);
-      $sku = isset($cols[$header_map['Sku']]) ? trim((string)$cols[$header_map['Sku']]) : '';
+    while (($cols = fgetcsv($handle)) !== false) {
+      $sku = isset($cols[$header_map['sku']]) ? trim((string)$cols[$header_map['sku']]) : '';
       if ($sku === '') continue;
 
-      $qty = isset($cols[$header_map['Available']]) ? $this->normalize_stock($cols[$header_map['Available']]) : 0;
-      $price = isset($cols[$header_map['Price']]) ? $this->normalize_price($cols[$header_map['Price']]) : '0.00';
+      $qty = isset($cols[$header_map['available']]) ? $this->normalize_stock($cols[$header_map['available']]) : 0;
+      $price = isset($cols[$header_map['price']]) ? $this->normalize_price($cols[$header_map['price']]) : '0.00';
 
       // Apply fixed adjustment (+ optional rounding)
       $orig_f = floatval($price);

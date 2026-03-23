@@ -20,10 +20,12 @@ Built for speed and sanity:
 
 ## CSV format
 
-### Required columns (case-sensitive)
+### Required columns
 - `Sku`
 - `Available`
 - `Price`
+
+Extra columns are allowed and ignored. Header matching is also tolerant, so the column order does not matter and common variants such as `SKU` still work.
 
 Example:
 
