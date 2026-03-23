@@ -1,0 +1,21 @@
+# Build and release artifacts
+/dist/
+/*.zip
+
+# Temporary local checks / extraction folders
+/__zipcheck/
+/tmp/
+/temp/
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Editor / IDE
+.vscode/
+.idea/
+*.code-workspace
+
+# Logs
+*.log
