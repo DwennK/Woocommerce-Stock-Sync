@@ -6,6 +6,16 @@ Versions use SemVer: MAJOR.MINOR.PATCH.
 
 ---
 
+## [1.4.1] - 2026-06-22
+### Security
+- Bound AJAX job execution and cancellation to the admin user that created the job.
+- Switched remaining JavaScript data output to `wp_json_encode()`.
+
+### Changed
+- Bumped plugin header version to `1.4.1`.
+
+---
+
 ## [1.4.0] - 2026-06-22
 ### Added
 - Added reusable supplier profiles for delimiter, column names, price adjustment, rounding, and pre-zero categories.

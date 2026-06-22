@@ -67,4 +67,18 @@ class WCSSD_JobStore {
 
     return '';
   }
+
+  public function current_user_can_access_job(array $job) {
+    $uid = $this->current_user_id_safe();
+    if (!$uid) {
+      return false;
+    }
+
+    if (!empty($job['owner_user_id'])) {
+      return (int)$job['owner_user_id'] === $uid;
+    }
+
+    $last_job_id = get_user_meta($uid, $this->last_job_meta_key(), true);
+    return !empty($job['job_id']) && $last_job_id === $job['job_id'];
+  }
 }

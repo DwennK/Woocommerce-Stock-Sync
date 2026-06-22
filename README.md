@@ -24,7 +24,7 @@ It is built for a simple workflow:
 
 ## Current Version
 
-- Plugin version: `1.4.0`
+- Plugin version: `1.4.1`
 
 ## Installation
 

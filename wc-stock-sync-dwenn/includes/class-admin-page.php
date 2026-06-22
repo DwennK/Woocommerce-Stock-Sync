@@ -218,7 +218,7 @@ class WCSSD_AdminPage {
 
           <?php if ($resume_job): ?>
             <script>
-              window._WCSSD_RESUME_JOB_ = <?php echo json_encode($resume_job); ?>;
+              window._WCSSD_RESUME_JOB_ = <?php echo wp_json_encode($resume_job); ?>;
             </script>
           <?php endif; ?>
         </div>
@@ -227,8 +227,8 @@ class WCSSD_AdminPage {
 
     <script>
     (function(){
-      const ajaxUrl = <?php echo json_encode($ajax_url); ?>;
-      const nonceAjax = <?php echo json_encode($nonce_ajax); ?>;
+      const ajaxUrl = <?php echo wp_json_encode($ajax_url); ?>;
+      const nonceAjax = <?php echo wp_json_encode($nonce_ajax); ?>;
       const profiles = <?php echo wp_json_encode($profiles); ?>;
 
       const area = document.getElementById('wcssd_job_area');

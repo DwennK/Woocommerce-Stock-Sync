@@ -141,6 +141,7 @@ class WCSSD_Plugin {
     $job = [
       'job_id'     => $job_id,
       'created'    => time(),
+      'owner_user_id' => $this->job_store->current_user_id_safe(),
       'dry_run'    => (bool)$dry_run,
       'chunk'      => $chunk_size,
       'delimiter'  => $parsed['delimiter'],
@@ -239,6 +240,11 @@ class WCSSD_Plugin {
     $job_id = isset($_POST['job_id']) ? sanitize_text_field(wp_unslash($_POST['job_id'])) : '';
     if (!$job_id) wp_send_json_error(['message' => 'Missing job_id.'], 400);
 
+    $job = $this->job_store->get($job_id);
+    if (is_array($job) && !$this->job_store->current_user_can_access_job($job)) {
+      wp_send_json_error(['message' => 'Job access denied.'], 403);
+    }
+
     $this->job_store->delete($job_id);
     $this->job_store->clear_for_current_user();
 
@@ -298,6 +304,9 @@ class WCSSD_Plugin {
     $job = $this->job_store->get($job_id);
     if (!is_array($job) || empty($job['job_id'])) {
       wp_send_json_error(['message' => 'Job not found or expired. Upload CSV again.'], 404);
+    }
+    if (!$this->job_store->current_user_can_access_job($job)) {
+      wp_send_json_error(['message' => 'Job access denied.'], 403);
     }
 
     $lines = [];

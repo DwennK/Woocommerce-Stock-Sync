@@ -2,7 +2,7 @@
 /**
  * Plugin Name: WooCommerce Stock Sync - Dwenn
  * Description: Upload a CSV in wp-admin to update WooCommerce product/variation stock and price in AJAX chunks.
- * Version: 1.4.0
+ * Version: 1.4.1
  * Author: Dwenn Kaufmann
  * Author URI: https://dwenn.ch
  * Update URI: false
