@@ -1,0 +1,30 @@
+{
+  "name": "dwenn/wc-stock-sync-dwenn",
+  "description": "WooCommerce stock and price CSV sync plugin.",
+  "type": "wordpress-plugin",
+  "license": "MIT",
+  "require-dev": {
+    "dealerdirect/phpcodesniffer-composer-installer": "^1.0",
+    "phpunit/phpunit": "^11.0",
+    "squizlabs/php_codesniffer": "^3.10",
+    "wp-coding-standards/wpcs": "^3.1"
+  },
+  "scripts": {
+    "lint": "find wc-stock-sync-dwenn tests scripts -name '*.php' -print -exec php -l {} \\;",
+    "phpcs": "phpcs",
+    "test": "phpunit",
+    "check-version": "php scripts/check-version.php",
+    "ci": [
+      "@lint",
+      "@phpcs",
+      "@test",
+      "@check-version"
+    ]
+  },
+  "config": {
+    "allow-plugins": {
+      "dealerdirect/phpcodesniffer-composer-installer": true
+    },
+    "sort-packages": true
+  }
+}

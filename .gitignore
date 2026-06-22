@@ -1,6 +1,7 @@
 # Build and release artifacts
 /dist/
 /*.zip
+/vendor/
 
 # Temporary local checks / extraction folders
 /__zipcheck/
@@ -19,3 +20,4 @@ Desktop.ini
 
 # Logs
 *.log
+.phpunit.result.cache
