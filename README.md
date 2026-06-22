@@ -18,10 +18,13 @@ It is built for a simple workflow:
 - Supports dry run mode
 - Supports a fixed price adjustment with optional integer rounding
 - Supports pre-zero stock by selected product categories before sync
+- Auto-detects CSV delimiters: comma, semicolon, or tab
+- Supports reusable supplier profiles for delimiter, column names, price adjustment, and pre-zero categories
+- Exports the import report/log from the progress screen
 
 ## Current Version
 
-- Plugin version: `1.3.2`
+- Plugin version: `1.4.0`
 
 ## Installation
 
@@ -86,6 +89,18 @@ Header matching is flexible:
 - `Available` also accepts common names like `Stock`, `Qty`, `Quantity`
 - `Price` also accepts `Regular Price`
 
+Supplier profiles can override the exact header names used for SKU, stock, and price.
+
+### CSV delimiter
+
+The importer auto-detects common CSV delimiters:
+
+- comma
+- semicolon
+- tab
+
+You can also force a delimiter in the upload form or save it in a supplier profile.
+
 ### Number parsing
 
 Price and stock parsing is tolerant of common supplier formats, including:
@@ -125,6 +140,17 @@ Examples:
 - CSV price `399.00` + adjustment `100` => saved price `499.00`
 - optional rounding can round the final value to the nearest integer
 
+### Supplier profiles
+
+Profiles save the import settings for a supplier:
+
+- CSV delimiter
+- SKU, stock, and price column names
+- price adjustment and rounding
+- pre-zero enabled state and selected categories
+
+Choose a saved profile before uploading a CSV to restore those settings.
+
 ### Pre-zero stock by category
 
 Before the CSV sync starts, the plugin can set stock to `0` for products in selected categories.
@@ -143,14 +169,38 @@ For variable products, the plugin also sets each variation stock to `0`.
 - Uses transients for resumable jobs
 - Does not keep the uploaded CSV permanently on disk
 - Includes nonce and capability checks on admin and AJAX actions
+- Keeps the finished job transient briefly so the report can be exported after completion
 
 ## Repository Layout
 
-- `wc-stock-sync-dwenn/wc-stock-sync-dwenn.php`: plugin file
+- `wc-stock-sync-dwenn/wc-stock-sync-dwenn.php`: plugin bootstrap
+- `wc-stock-sync-dwenn/includes/class-plugin.php`: WordPress hooks and job orchestration
+- `wc-stock-sync-dwenn/includes/class-admin-page.php`: wp-admin screen and AJAX UI
+- `wc-stock-sync-dwenn/includes/class-csv-parser.php`: CSV headers, number parsing, and row normalization
+- `wc-stock-sync-dwenn/includes/class-sku-resolver.php`: SKU-to-product lookup
+- `wc-stock-sync-dwenn/includes/class-job-store.php`: transient job persistence
+- `wc-stock-sync-dwenn/includes/class-stock-updater.php`: WooCommerce stock and price writes
 - `CHANGELOG.md`: release history
 - `dist/`: local build output, ignored by git
 
 ## Development
+
+### Run Tests
+
+Install development dependencies and run the PHPUnit suite from the repository root:
+
+```bash
+composer install
+composer test
+```
+
+Run the full local quality gate:
+
+```bash
+composer ci
+```
+
+This runs PHP syntax checks, PHP_CodeSniffer with WordPress Coding Standards, PHPUnit, and the plugin/changelog/tag version consistency check.
 
 ### Create a WordPress-ready ZIP
 

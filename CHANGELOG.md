@@ -6,6 +6,27 @@ Versions use SemVer: MAJOR.MINOR.PATCH.
 
 ---
 
+## [1.4.0] - 2026-06-22
+### Added
+- Added reusable supplier profiles for delimiter, column names, price adjustment, rounding, and pre-zero categories.
+- Added CSV delimiter auto-detection for comma, semicolon, and tab-delimited supplier files.
+- Added explicit CSV column mapping fields for SKU, stock, and price headers.
+- Added import report export from the progress screen.
+- Added separate pre-zero progress counters.
+- Added PHPUnit coverage for CSV parsing, delimiter detection, custom columns, duplicate SKUs, and price adjustment edge cases.
+- Added a quality CI workflow with PHP syntax checks, PHP_CodeSniffer with WordPress Coding Standards, PHPUnit, and version consistency checks.
+
+### Changed
+- Split the main plugin file into focused classes for admin UI, CSV parsing, SKU resolution, job storage, stock updates, and orchestration.
+- Finished jobs now remain available until expiry or cancellation so reports can be exported after completion.
+- Bumped plugin header version to `1.4.0`.
+
+### Fixed
+- Passed the explicit `fgetcsv()` escape argument to avoid PHP deprecation warnings on newer PHP versions.
+- Improved request sanitization for AJAX job IDs and uploaded CSV metadata.
+
+---
+
 ## [1.3.2] - 2026-03-23
 ### Fixed
 - Hardened numeric parsing for CSV price and stock values so common formats like `1,299.00`, `1.299,00`, spaces, and apostrophes do not get misread.
