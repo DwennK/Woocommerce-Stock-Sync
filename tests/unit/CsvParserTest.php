@@ -15,9 +15,11 @@ final class CsvParserTest extends TestCase {
     $this->assertSame('1299.00', $this->parser->normalize_price("1'299.00"));
   }
 
-  public function test_normalizes_empty_values(): void {
-    $this->assertSame('0.00', $this->parser->normalize_price(''));
-    $this->assertSame(0, $this->parser->normalize_stock(''));
+  public function test_rejects_empty_and_invalid_values(): void {
+    $this->assertNull($this->parser->normalize_price(''));
+    $this->assertNull($this->parser->normalize_stock(''));
+    $this->assertNull($this->parser->normalize_price('N/A'));
+    $this->assertNull($this->parser->normalize_stock('12 units'));
   }
 
   public function test_accepts_header_aliases(): void {
@@ -60,10 +62,42 @@ final class CsvParserTest extends TestCase {
     $this->assertSame('44.10', $result['rows'][0]['price']);
   }
 
-  public function test_allows_negative_adjusted_prices(): void {
+  public function test_rejects_negative_adjusted_prices(): void {
     $result = $this->parseCsvString("Sku,Available,Price\nNEG-1,1,25.00\n", -30.0);
 
-    $this->assertSame('-5.00', $result['rows'][0]['price']);
+    $this->assertSame([], $result['rows']);
+    $this->assertSame('price', $result['errors'][0]['field']);
+  }
+
+  public function test_reports_line_numbers_for_invalid_rows(): void {
+    $result = $this->parseCsvString("Sku,Available,Price\nBAD-1,N/A,49.00\nBAD-2,2,unknown\n");
+
+    $this->assertCount(2, $result['errors']);
+    $this->assertSame(2, $result['errors'][0]['line']);
+    $this->assertSame('available', $result['errors'][0]['field']);
+    $this->assertSame(3, $result['errors'][1]['line']);
+    $this->assertSame('price', $result['errors'][1]['field']);
+  }
+
+  public function test_rejects_duplicate_skus_case_insensitively(): void {
+    $result = $this->parseCsvString("Sku,Available,Price\nDUP-1,1,10\ndup-1,2,20\n");
+
+    $this->assertCount(1, $result['rows']);
+    $this->assertCount(1, $result['errors']);
+    $this->assertStringContainsString('Duplicate SKU', $result['errors'][0]['message']);
+  }
+
+  public function test_rejects_malformed_numeric_grouping(): void {
+    $this->assertNull($this->parser->normalize_price('1,2,3'));
+    $this->assertNull($this->parser->normalize_price('1234.567'));
+    $this->assertNull($this->parser->normalize_stock('1.234.56'));
+  }
+
+  public function test_rejects_header_only_csv(): void {
+    $result = $this->parseCsvString("Sku,Available,Price\n");
+
+    $this->assertSame([], $result['rows']);
+    $this->assertSame('file', $result['errors'][0]['field']);
   }
 
   private function parseCsvString(
