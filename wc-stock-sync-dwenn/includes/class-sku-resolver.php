@@ -4,12 +4,17 @@ if (!defined('ABSPATH')) exit;
 
 class WCSSD_SkuResolver {
   public function resolve_skus_to_posts(array $skus) {
+    $result = $this->resolve_with_diagnostics($skus);
+    return $result['map'];
+  }
+
+  public function resolve_with_diagnostics(array $skus) {
     global $wpdb;
 
     $skus = array_values(array_unique(array_filter(array_map('trim', $skus))));
-    if (!$skus) return [];
+    if (!$skus) return ['map' => [], 'ambiguous' => []];
 
-    $map = [];
+    $matches = [];
     $chunk_size = 500;
     $chunks = array_chunk($skus, $chunk_size);
 
@@ -35,17 +40,35 @@ class WCSSD_SkuResolver {
       if ($rows) {
         foreach ($rows as $r) {
           $sku = (string)$r->sku;
-          if (!isset($map[$sku])) {
-            $map[$sku] = [
-              'post_id'   => (int)$r->post_id,
-              'post_type' => (string)$r->post_type,
-              'parent_id' => (int)$r->post_parent,
-            ];
-          }
+          $canonical = self::canonical_sku($sku);
+          $matches[$canonical][(int)$r->post_id] = [
+            'sku' => $sku,
+            'post_id' => (int)$r->post_id,
+            'post_type' => (string)$r->post_type,
+            'parent_id' => (int)$r->post_parent,
+          ];
         }
       }
     }
 
-    return $map;
+    $map = [];
+    $ambiguous = [];
+    foreach ($skus as $requested_sku) {
+      $canonical = self::canonical_sku($requested_sku);
+      $candidates = isset($matches[$canonical]) ? array_values($matches[$canonical]) : [];
+      if (count($candidates) > 1) {
+        $ambiguous[$requested_sku] = array_column($candidates, 'post_id');
+        continue;
+      }
+      if (count($candidates) === 1) {
+        $map[$requested_sku] = $candidates[0];
+      }
+    }
+
+    return ['map' => $map, 'ambiguous' => $ambiguous];
+  }
+
+  public static function canonical_sku($sku) {
+    return strtolower(trim((string)$sku));
   }
 }

@@ -10,518 +10,336 @@ class WCSSD_AdminPage {
   }
 
   public function render() {
-    if (!current_user_can('manage_woocommerce')) {
-      wp_die('Insufficient permissions.');
-    }
+    if (!current_user_can('manage_woocommerce')) wp_die('Insufficient permissions.');
 
-    $cats = get_terms([
-      'taxonomy'   => 'product_cat',
-      'hide_empty' => false,
-    ]);
+    $cats = get_terms(['taxonomy' => 'product_cat', 'hide_empty' => false]);
     if (is_wp_error($cats)) $cats = [];
-
-    $resume_job = $this->job_store->get_resume_job_id();
     $profiles = WCSSD_Plugin::get_supplier_profiles();
-
+    $resume_job = $this->job_store->get_resume_job_id();
+    $recent_jobs = $this->job_store->recent_for_current_user(10);
     $saved_adjust = get_option('wcssd_price_adjust');
-    if ($saved_adjust === false || $saved_adjust === null) {
-      $saved_amount = 0;
-      $saved_round = 'integer';
-      $has_saved = false;
-    } else {
-      $saved_amount = isset($saved_adjust['amount']) ? $saved_adjust['amount'] : 0;
-      $saved_round = isset($saved_adjust['round']) ? $saved_adjust['round'] : 'none';
-      $has_saved = true;
-    }
-
-    $create_action = admin_url('admin-post.php');
+    $saved_amount = is_array($saved_adjust) && isset($saved_adjust['amount']) ? $saved_adjust['amount'] : 0;
+    $saved_round = is_array($saved_adjust) && isset($saved_adjust['round']) ? $saved_adjust['round'] : 'none';
     $ajax_url = admin_url('admin-ajax.php');
-    $nonce_create = wp_create_nonce('wcssd_create_job');
-    $nonce_ajax   = wp_create_nonce('wcssd_ajax');
-
+    $nonce_ajax = wp_create_nonce('wcssd_ajax');
     ?>
-    <div class="wrap">
-      <h1>WooCommerce Stock Sync - Dwenn</h1>
+    <div class="wrap wcssd-wrap">
+      <h1>WooCommerce Stock Sync</h1>
+      <p class="wcssd-lead">Analysez le fichier, vérifiez chaque changement, puis confirmez l’import. Aucune donnée WooCommerce n’est modifiée pendant la prévisualisation.</p>
 
-      <div style="max-width: 980px;">
-        <div style="background:#fff;border:1px solid #dcdcde;border-radius:12px;padding:16px 16px 8px 16px;margin-bottom:16px;">
-          <h2 style="margin-top:0;">Upload CSV</h2>
-          <p style="margin-top:0;color:#50575e;">
-            Required columns used by the sync: <code>Sku</code>, <code>Available</code>, <code>Price</code>.
-            Extra columns are ignored and header matching is flexible.
-            Only SKUs that exist in WooCommerce will be updated.
-          </p>
-
-          <form method="post" action="<?php echo esc_url($create_action); ?>" enctype="multipart/form-data">
+      <div class="wcssd-grid">
+        <section class="wcssd-card">
+          <h2>1. Analyser un CSV</h2>
+          <form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>" enctype="multipart/form-data">
             <input type="hidden" name="action" value="wcssd_create_job" />
-            <input type="hidden" name="_wpnonce" value="<?php echo esc_attr($nonce_create); ?>" />
+            <?php wp_nonce_field('wcssd_create_job'); ?>
 
             <table class="form-table" role="presentation">
               <tr>
-                <th scope="row"><label for="wcssd_profile_select">Supplier profile</label></th>
+                <th scope="row"><label for="wcssd_profile_select">Profil fournisseur</label></th>
                 <td>
                   <select id="wcssd_profile_select">
-                    <option value="">No profile</option>
+                    <option value="">Aucun profil</option>
                     <?php foreach ($profiles as $profile_key => $profile): ?>
                       <option value="<?php echo esc_attr($profile_key); ?>"><?php echo esc_html(!empty($profile['name']) ? $profile['name'] : $profile_key); ?></option>
                     <?php endforeach; ?>
                   </select>
-                  <input type="text" id="wcssd_profile_name" name="wcssd_profile_name" placeholder="Profile name" style="margin-left:8px;min-width:220px;" />
-                  <label style="margin-left:8px;">
-                    <input type="checkbox" name="wcssd_profile_save" value="1" />
-                    Save profile
-                  </label>
-                  <p class="description">Profiles store delimiter, column names, price adjustment, and pre-zero categories.</p>
+                  <input type="text" id="wcssd_profile_name" name="wcssd_profile_name" placeholder="Nom du profil" />
+                  <label><input type="checkbox" name="wcssd_profile_save" value="1" /> Enregistrer</label>
                 </td>
               </tr>
-
               <tr>
-                <th scope="row"><label for="wcssd_csv">CSV file</label></th>
-                <td>
-                  <input type="file" id="wcssd_csv" name="wcssd_csv" accept=".csv,text/csv" required />
-                </td>
+                <th scope="row"><label for="wcssd_csv">Fichier CSV</label></th>
+                <td><input type="file" id="wcssd_csv" name="wcssd_csv" accept=".csv,text/csv" required /></td>
               </tr>
-
               <tr>
-                <th scope="row"><label for="wcssd_delimiter">CSV delimiter</label></th>
+                <th scope="row"><label for="wcssd_delimiter">Séparateur</label></th>
                 <td>
                   <select id="wcssd_delimiter" name="wcssd_delimiter">
-                    <option value="auto">Auto-detect</option>
-                    <option value=",">Comma (,)</option>
-                    <option value=";">Semicolon (;)</option>
-                    <option value="tab">Tab</option>
+                    <option value="auto">Détection automatique</option>
+                    <option value=",">Virgule</option>
+                    <option value=";">Point-virgule</option>
+                    <option value="tab">Tabulation</option>
                   </select>
                 </td>
               </tr>
-
               <tr>
-                <th scope="row">CSV columns</th>
-                <td>
-                  <label style="display:inline-block;margin-right:10px;">
-                    SKU
-                    <input type="text" id="wcssd_col_sku" name="wcssd_col_sku" value="Sku" style="display:block;min-width:160px;" />
-                  </label>
-                  <label style="display:inline-block;margin-right:10px;">
-                    Stock
-                    <input type="text" id="wcssd_col_available" name="wcssd_col_available" value="Available" style="display:block;min-width:160px;" />
-                  </label>
-                  <label style="display:inline-block;">
-                    Price
-                    <input type="text" id="wcssd_col_price" name="wcssd_col_price" value="Price" style="display:block;min-width:160px;" />
-                  </label>
-                  <p class="description">Leave defaults unless the supplier uses different header names.</p>
+                <th scope="row">Colonnes</th>
+                <td class="wcssd-columns">
+                  <label>SKU <input type="text" id="wcssd_col_sku" name="wcssd_col_sku" value="Sku" /></label>
+                  <label>Stock <input type="text" id="wcssd_col_available" name="wcssd_col_available" value="Available" /></label>
+                  <label>Prix <input type="text" id="wcssd_col_price" name="wcssd_col_price" value="Price" /></label>
                 </td>
               </tr>
-
               <tr>
-                <th scope="row">Pré-traitement</th>
+                <th scope="row">Pré-zero</th>
                 <td>
-                  <label style="display:block;margin-bottom:8px;">
-                    <input type="checkbox" id="wcssd_prezero_enable" name="wcssd_prezero_enable" value="1" />
-                    Mettre le stock à <strong>0</strong> pour certains produits <strong>avant</strong> la sync (utile si des SKU disparaissent du CSV)
-                  </label>
-
-                  <div id="wcssd_prezero_cats_container" style="padding:10px;border:1px solid #dcdcde;border-radius:10px;max-height:220px;overflow:auto;background:#fafafa;">
-                    <strong>Catégories à mettre à zéro :</strong>
-                    <div style="margin-top:8px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 14px;">
-                      <?php foreach ($cats as $c): ?>
-                        <label>
-                          <input type="checkbox" name="wcssd_prezero_cats[]" value="<?php echo esc_attr($c->term_id); ?>" />
-                          <?php echo esc_html($c->name); ?>
-                        </label>
-                      <?php endforeach; ?>
-                    </div>
-                    <p class="description" style="margin:8px 0 0 0;">
-                      Choisis uniquement les catégories liées à ton fournisseur.
-                    </p>
+                  <label><input type="checkbox" id="wcssd_prezero_enable" name="wcssd_prezero_enable" value="1" /> Mettre à zéro les catégories sélectionnées avant la synchronisation</label>
+                  <div id="wcssd_prezero_cats_container" class="wcssd-categories">
+                    <?php foreach ($cats as $cat): ?>
+                      <label><input type="checkbox" name="wcssd_prezero_cats[]" value="<?php echo esc_attr($cat->term_id); ?>" /> <?php echo esc_html($cat->name); ?></label>
+                    <?php endforeach; ?>
                   </div>
                 </td>
               </tr>
-
               <tr>
-                <th scope="row"><label for="wcssd_price_adjust">Price adjustment</label></th>
+                <th scope="row"><label for="wcssd_price_adjust">Ajustement du prix</label></th>
                 <td>
                   <input type="number" step="0.01" id="wcssd_price_adjust" name="wcssd_price_adjust_amount" value="<?php echo esc_attr($saved_amount); ?>" />
-                  <p class="description">Fixed increase to add to each CSV price (e.g. 100). Can be negative.</p>
-
-                  <label style="display:block;margin-top:6px;">
-                    <input type="checkbox" name="wcssd_price_adjust_round" value="integer" <?php echo ((!$has_saved || $saved_round === 'integer') ? 'checked' : ''); ?> />
-                    Round to nearest integer
-                  </label>
-
-                  <label style="display:block;margin-top:6px;">
-                    <input type="checkbox" name="wcssd_price_adjust_save" value="1" <?php echo (!$has_saved ? 'checked' : ''); ?> />
-                    Save as default
-                  </label>
+                  <label><input type="checkbox" name="wcssd_price_adjust_round" value="integer" <?php checked($saved_round, 'integer'); ?> /> Arrondir à l’entier</label>
+                  <label><input type="checkbox" name="wcssd_price_adjust_save" value="1" /> Enregistrer par défaut</label>
                 </td>
               </tr>
-
               <tr>
-                <th scope="row"><label for="wcssd_chunk">Chunk size</label></th>
-                <td>
-                  <input type="number" id="wcssd_chunk" name="wcssd_chunk" min="5" max="200" value="25" />
-                  <p class="description">How many matched SKUs to process per AJAX request (25–50 is usually ideal).</p>
-                </td>
+                <th scope="row"><label for="wcssd_chunk">Taille des lots</label></th>
+                <td><input type="number" id="wcssd_chunk" name="wcssd_chunk" min="5" max="200" value="25" /></td>
               </tr>
-
               <tr>
-                <th scope="row">Options</th>
-                <td>
-                  <label>
-                    <input type="checkbox" name="wcssd_dry_run" value="1" />
-                    Dry run (no changes, just simulate)
-                  </label>
-                </td>
+                <th scope="row">Mode</th>
+                <td><label><input type="checkbox" name="wcssd_dry_run" value="1" /> Prévisualisation uniquement, sans possibilité d’appliquer</label></td>
               </tr>
             </table>
-
-            <?php submit_button('Upload and Start Sync', 'primary', 'submit', true); ?>
+            <?php submit_button('Analyser le CSV', 'primary', 'submit', true); ?>
           </form>
-        </div>
+        </section>
 
-        <div style="background:#fff;border:1px solid #dcdcde;border-radius:12px;padding:16px;">
-          <h2 style="margin-top:0;">Progress</h2>
-
+        <section class="wcssd-card" id="wcssd_job_area" style="display:none;">
+          <div class="wcssd-heading">
+            <div><h2>2. Prévisualiser et appliquer</h2><span id="wcssd_job_label"></span></div>
+            <span class="wcssd-status" id="wcssd_status">—</span>
+          </div>
           <div id="wcssd_notice_area"></div>
-
-          <div id="wcssd_job_area" style="display:none;">
-            <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px;">
-              <button class="button button-primary" id="wcssd_start_btn">Start / Resume</button>
-              <button class="button" id="wcssd_cancel_btn">Cancel job</button>
-              <button class="button" id="wcssd_export_btn" disabled>Exporter le rapport</button>
-              <span id="wcssd_job_label" style="color:#50575e;"></span>
-            </div>
-
-            <div style="height:14px;background:#f0f0f1;border-radius:999px;overflow:hidden;border:1px solid #dcdcde;">
-              <div id="wcssd_bar" style="height:100%;width:0%;background:linear-gradient(90deg,#2271b1,#3c8dbc);"></div>
-            </div>
-
-            <div style="display:flex;gap:16px;flex-wrap:wrap;margin-top:10px;">
-              <div><strong>Processed:</strong> <span id="wcssd_processed">0</span>/<span id="wcssd_total">0</span></div>
-              <div><strong>Pre-zero:</strong> <span id="wcssd_prezero_processed">0</span>/<span id="wcssd_prezero_total">0</span></div>
-              <div><strong>Updated:</strong> <span id="wcssd_updated">0</span></div>
-              <div><strong>Missing:</strong> <span id="wcssd_missing">0</span></div>
-              <div><strong>Errors:</strong> <span id="wcssd_errors">0</span></div>
-              <div><strong>Delimiter:</strong> <span id="wcssd_delimiter_label">—</span></div>
-              <div><strong>Mode:</strong> <span id="wcssd_mode">—</span></div>
-            </div>
-
-            <div style="margin-top:10px;color:#50575e;">
-              <strong>Current:</strong> <span id="wcssd_current">—</span>
-            </div>
-
-            <details style="margin-top:12px;">
-              <summary>Show log</summary>
-              <pre id="wcssd_log" style="white-space:pre-wrap;background:#0b1220;color:#d7e0ea;padding:12px;border-radius:10px;max-height:260px;overflow:auto;"></pre>
-            </details>
+          <div class="wcssd-actions">
+            <button class="button button-primary" id="wcssd_start_btn" disabled>Appliquer les changements</button>
+            <button class="button" id="wcssd_cancel_btn">Annuler le job</button>
+            <button class="button" id="wcssd_rollback_btn" disabled>Restaurer les anciennes valeurs</button>
+            <button class="button" id="wcssd_export_btn" disabled>Exporter le rapport</button>
+          </div>
+          <div class="wcssd-progress"><div id="wcssd_bar"></div></div>
+          <div class="wcssd-stats">
+            <div><strong id="wcssd_changed">0</strong><span>à modifier</span></div>
+            <div><strong id="wcssd_unchanged">0</strong><span>inchangés</span></div>
+            <div><strong id="wcssd_missing">0</strong><span>SKU absents</span></div>
+            <div><strong id="wcssd_invalid">0</strong><span>invalides</span></div>
+            <div><strong id="wcssd_updated">0</strong><span>appliqués</span></div>
+            <div><strong id="wcssd_errors">0</strong><span>erreurs</span></div>
           </div>
 
-          <?php if ($resume_job): ?>
-            <script>
-              window._WCSSD_RESUME_JOB_ = <?php echo wp_json_encode($resume_job); ?>;
-            </script>
-          <?php endif; ?>
-        </div>
+          <h3>Aperçu détaillé <small>(100 premières lignes)</small></h3>
+          <div class="wcssd-table-wrap">
+            <table class="widefat striped">
+              <thead><tr><th>Ligne</th><th>Opération</th><th>SKU</th><th>Stock actuel → nouveau</th><th>Prix actuel → nouveau</th><th>État</th><th>Détail</th></tr></thead>
+              <tbody id="wcssd_preview_body"></tbody>
+            </table>
+          </div>
+          <details><summary>Journal technique</summary><pre id="wcssd_log"></pre></details>
+        </section>
+
+        <?php if ($recent_jobs): ?>
+          <section class="wcssd-card">
+            <h2>Historique récent</h2>
+            <div class="wcssd-table-wrap">
+              <table class="widefat striped">
+                <thead><tr><th>Date</th><th>Profil</th><th>Mode</th><th>État</th><th></th></tr></thead>
+                <tbody>
+                  <?php foreach ($recent_jobs as $recent_job): ?>
+                    <tr>
+                      <td><?php echo esc_html($recent_job['created_at']); ?> UTC</td>
+                      <td><?php echo esc_html($recent_job['profile_name'] !== '' ? $recent_job['profile_name'] : '—'); ?></td>
+                      <td><?php echo esc_html($recent_job['mode']); ?></td>
+                      <td><?php echo esc_html($recent_job['status']); ?></td>
+                      <td><a class="button" href="<?php echo esc_url(admin_url('admin.php?page=wc-stock-sync-dwenn&wcssd_job=' . rawurlencode($recent_job['job_key']))); ?>">Ouvrir</a></td>
+                    </tr>
+                  <?php endforeach; ?>
+                </tbody>
+              </table>
+            </div>
+          </section>
+        <?php endif; ?>
       </div>
     </div>
+
+    <style>
+      .wcssd-wrap{max-width:1440px}
+      .wcssd-lead{max-width:900px;color:#50575e;font-size:14px}
+      .wcssd-grid{display:grid;gap:18px}
+      .wcssd-card{background:#fff;border:1px solid #dcdcde;border-radius:12px;padding:18px;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+      .wcssd-card h2{margin-top:0}
+      .wcssd-columns{display:flex;gap:12px;flex-wrap:wrap}
+      .wcssd-columns label{display:grid;gap:4px}
+      .wcssd-categories{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px 14px;max-height:190px;overflow:auto;background:#f6f7f7;border:1px solid #dcdcde;border-radius:8px;padding:10px;margin-top:8px}
+      .wcssd-heading,.wcssd-actions,.wcssd-stats{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+      .wcssd-heading{justify-content:space-between}
+      .wcssd-heading h2{margin-bottom:2px}
+      .wcssd-status{border-radius:999px;background:#f0f0f1;padding:5px 10px;font-weight:600}
+      .wcssd-actions{margin:14px 0}
+      .wcssd-progress{height:12px;background:#f0f0f1;border-radius:999px;overflow:hidden}
+      .wcssd-progress div{height:100%;width:0;background:#2271b1;transition:width .25s}
+      .wcssd-stats{margin:14px 0}
+      .wcssd-stats div{min-width:110px;border:1px solid #dcdcde;border-radius:8px;padding:10px}
+      .wcssd-stats strong,.wcssd-stats span{display:block}
+      .wcssd-stats strong{font-size:20px}
+      .wcssd-stats span{color:#646970}
+      .wcssd-table-wrap{overflow:auto;max-height:500px}
+      .wcssd-table-wrap table{min-width:980px}
+      .wcssd-table-wrap td{vertical-align:top}
+      .wcssd-row-invalid td{background:#fcf0f1}
+      .wcssd-row-ready td{background:#f0f6fc}
+      .wcssd-row-applied td{background:#edfaef}
+      #wcssd_log{white-space:pre-wrap;background:#0b1220;color:#d7e0ea;padding:12px;border-radius:8px;max-height:260px;overflow:auto}
+      @media(max-width:782px){
+        .wcssd-card{padding:12px;max-width:100%;box-sizing:border-box;overflow:hidden}
+        .wcssd-card .form-table,.wcssd-card .form-table tbody,.wcssd-card .form-table tr,.wcssd-card .form-table th,.wcssd-card .form-table td{display:block;width:100%;box-sizing:border-box}
+        .wcssd-card .form-table th{padding:12px 0 4px}
+        .wcssd-card .form-table td{padding:4px 0 12px}
+        .wcssd-card input[type="text"],.wcssd-card input[type="number"],.wcssd-card select{max-width:100%}
+        .wcssd-columns{display:grid;grid-template-columns:1fr}
+        .wcssd-categories{grid-template-columns:1fr}
+        .wcssd-stats div{min-width:calc(50% - 28px)}
+        .wcssd-actions .button{width:100%}
+      }
+    </style>
 
     <script>
     (function(){
       const ajaxUrl = <?php echo wp_json_encode($ajax_url); ?>;
-      const nonceAjax = <?php echo wp_json_encode($nonce_ajax); ?>;
+      const nonce = <?php echo wp_json_encode($nonce_ajax); ?>;
       const profiles = <?php echo wp_json_encode($profiles); ?>;
-
-      const area = document.getElementById('wcssd_job_area');
-      const notice = document.getElementById('wcssd_notice_area');
-      const startBtn = document.getElementById('wcssd_start_btn');
-      const cancelBtn = document.getElementById('wcssd_cancel_btn');
-      const exportBtn = document.getElementById('wcssd_export_btn');
-
-      const bar = document.getElementById('wcssd_bar');
-      const processedEl = document.getElementById('wcssd_processed');
-      const totalEl = document.getElementById('wcssd_total');
-      const prezeroProcessedEl = document.getElementById('wcssd_prezero_processed');
-      const prezeroTotalEl = document.getElementById('wcssd_prezero_total');
-      const updatedEl = document.getElementById('wcssd_updated');
-      const missingEl = document.getElementById('wcssd_missing');
-      const errorsEl = document.getElementById('wcssd_errors');
-      const delimiterLabelEl = document.getElementById('wcssd_delimiter_label');
-      const currentEl = document.getElementById('wcssd_current');
-      const modeEl = document.getElementById('wcssd_mode');
-      const logEl = document.getElementById('wcssd_log');
-      const jobLabel = document.getElementById('wcssd_job_label');
-
-      let jobId = window._WCSSD_RESUME_JOB_ || '';
-      let running = false;
+      let jobId = <?php echo wp_json_encode($resume_job); ?> || '';
       let reportText = '';
+      let pollTimer = null;
+      const byId = id => document.getElementById(id);
+      const area = byId('wcssd_job_area');
 
-      function setNotice(type, msg) {
-        notice.innerHTML = '';
-        var d = document.createElement('div');
-        d.className = 'notice notice-' + type;
-        d.style.margin = '0 0 12px 0';
-        var p = document.createElement('p');
-        p.textContent = msg;
-        d.appendChild(p);
-        notice.appendChild(d);
+      function notice(type, message) {
+        const target = byId('wcssd_notice_area');
+        target.innerHTML = '';
+        const box = document.createElement('div');
+        box.className = 'notice notice-' + type;
+        const p = document.createElement('p');
+        p.textContent = message;
+        box.appendChild(p);
+        target.appendChild(box);
       }
 
-      function logLine(line) {
-        logEl.textContent += (line + "\n");
-        logEl.scrollTop = logEl.scrollHeight;
-      }
-
-      function updateUI(state) {
-        processedEl.textContent = state.processed;
-        totalEl.textContent = state.total;
-        prezeroProcessedEl.textContent = state.prezero_processed || 0;
-        prezeroTotalEl.textContent = state.prezero_total || 0;
-        updatedEl.textContent = state.updated;
-        missingEl.textContent = state.missing;
-        errorsEl.textContent = state.errors;
-        delimiterLabelEl.textContent = state.delimiter || '—';
-
-        const phase = state.phase ? String(state.phase) : '';
-        modeEl.textContent = (state.dry_run ? 'Dry run' : 'Live') + (phase ? (' / ' + phase) : '');
-
-        jobLabel.textContent = jobId ? ('Job: ' + jobId) : '';
-        currentEl.textContent = state.current || '—';
-
-        const pct = state.total > 0 ? Math.round((state.processed / state.total) * 100) : 0;
-        bar.style.width = pct + '%';
-        exportBtn.disabled = !reportText;
-      }
-
-      function setReport(text) {
-        reportText = text || logEl.textContent || '';
-        exportBtn.disabled = !reportText;
-      }
-
-      function downloadReport() {
-        if (!reportText) return;
-        const blob = new Blob([reportText], {type: 'text/plain;charset=utf-8'});
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'wc-stock-sync-report-' + (jobId || 'job') + '.txt';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-      }
-
-      async function post(params) {
-        const body = new URLSearchParams(params);
-        let res;
-
-        try {
-          res = await fetch(ajaxUrl, {
-            method: 'POST',
-            credentials: 'same-origin',
-            headers: {'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'},
-            body
-          });
-        } catch (error) {
-          throw new Error('Network error. Please retry.');
-        }
-
+      async function post(action) {
+        const response = await fetch(ajaxUrl, {
+          method: 'POST', credentials: 'same-origin',
+          headers: {'Content-Type':'application/x-www-form-urlencoded;charset=UTF-8'},
+          body: new URLSearchParams({action, _wpnonce: nonce, job_id: jobId})
+        });
         let data;
-        try {
-          data = await res.json();
-        } catch (error) {
-          throw new Error('Unexpected server response.');
-        }
-
-        if (!res.ok && (!data || !data.data || !data.data.message)) {
-          throw new Error('HTTP error ' + res.status + '.');
-        }
-
-        return data;
+        try { data = await response.json(); } catch (error) { throw new Error('Réponse serveur inattendue.'); }
+        if (!data || !data.success) throw new Error(data && data.data && data.data.message ? data.data.message : 'Erreur AJAX.');
+        return data.data;
       }
 
-      async function tick() {
-        if (!running || !jobId) return;
+      function value(value) { return value === null || typeof value === 'undefined' || value === '' ? '—' : String(value); }
 
-        let data;
-        try {
-          data = await post({
-            action: 'wcssd_run_chunk',
-            _wpnonce: nonceAjax,
-            job_id: jobId
-          });
-        } catch (error) {
-          running = false;
-          setNotice('error', (error && error.message) ? error.message : 'AJAX error.');
-          return;
-        }
-
-        if (!data || !data.success) {
-          running = false;
-          setNotice('error', (data && data.data && data.data.message) ? data.data.message : 'AJAX error.');
-          return;
-        }
-
-        updateUI(data.data.state);
-
-        if (data.data.lines && data.data.lines.length) {
-          data.data.lines.forEach(logLine);
-        }
-        setReport(data.data.report || logEl.textContent);
-
-        if (data.data.done) {
-          running = false;
-          setNotice('success', 'Done. Job cleaned up.');
-          return;
-        }
-
-        setTimeout(tick, 150);
-      }
-
-      startBtn.addEventListener('click', function(){
-        if (!jobId) {
-          setNotice('warning', 'No active job. Upload a CSV first.');
-          return;
-        }
-        if (running) return;
-        running = true;
-        setNotice('info', 'Running…');
-        tick();
-      });
-
-      cancelBtn.addEventListener('click', async function(){
-        if (!jobId) return;
-        running = false;
-
-        let data;
-        try {
-          data = await post({
-            action: 'wcssd_cancel_job',
-            _wpnonce: nonceAjax,
-            job_id: jobId
-          });
-        } catch (error) {
-          setNotice('error', (error && error.message) ? error.message : 'Cancel failed.');
-          return;
-        }
-
-        if (data && data.success) {
-          setNotice('success', 'Job cancelled and cleaned up.');
-          jobId = '';
-          jobLabel.textContent = '';
-          bar.style.width = '0%';
-          currentEl.textContent = '—';
-          setReport('');
-        } else {
-          setNotice('error', (data && data.data && data.data.message) ? data.data.message : 'Cancel failed.');
-        }
-      });
-
-      exportBtn.addEventListener('click', function(event){
-        event.preventDefault();
-        downloadReport();
-      });
-
-      async function initResume() {
-        if (!jobId) return;
-        area.style.display = 'block';
-        setNotice('info', 'Resumable job detected. Click Start/Resume.');
-
-        let data;
-        try {
-          data = await post({
-            action: 'wcssd_run_chunk',
-            _wpnonce: nonceAjax,
-            job_id: jobId,
-            peek: '1'
-          });
-        } catch (error) {
-          setNotice('error', (error && error.message) ? error.message : 'Resume failed.');
-          return;
-        }
-
-        if (data && data.success) {
-          updateUI(data.data.state);
-          if (data.data.lines && data.data.lines.length) data.data.lines.forEach(logLine);
-          setReport(data.data.report || logEl.textContent);
-        }
-      }
-
-      area.style.display = jobId ? 'block' : 'none';
-      initResume();
-
-      (function(){
-        const prezeroEnable = document.getElementById('wcssd_prezero_enable');
-        const prezeroCats = Array.from(document.querySelectorAll('input[name="wcssd_prezero_cats[]"]'));
-        function setPrezeroState() {
-          const enabled = prezeroEnable && prezeroEnable.checked;
-          prezeroCats.forEach(function(i){ i.disabled = !enabled; });
-        }
-        if (prezeroEnable) {
-          setPrezeroState();
-          prezeroEnable.addEventListener('change', setPrezeroState);
-        }
-      })();
-
-      (function(){
-        const profileSelect = document.getElementById('wcssd_profile_select');
-        const profileName = document.getElementById('wcssd_profile_name');
-        const delimiter = document.getElementById('wcssd_delimiter');
-        const colSku = document.getElementById('wcssd_col_sku');
-        const colAvailable = document.getElementById('wcssd_col_available');
-        const colPrice = document.getElementById('wcssd_col_price');
-        const adjust = document.getElementById('wcssd_price_adjust');
-        const round = document.querySelector('input[name="wcssd_price_adjust_round"]');
-        const prezeroEnable = document.getElementById('wcssd_prezero_enable');
-        const prezeroCats = Array.from(document.querySelectorAll('input[name="wcssd_prezero_cats[]"]'));
-
-        function setProfile(profile) {
-          if (!profile) return;
-          profileName.value = profile.name || '';
-          delimiter.value = profile.delimiter || 'auto';
-          colSku.value = profile.columns && profile.columns.sku ? profile.columns.sku : 'Sku';
-          colAvailable.value = profile.columns && profile.columns.available ? profile.columns.available : 'Available';
-          colPrice.value = profile.columns && profile.columns.price ? profile.columns.price : 'Price';
-          adjust.value = typeof profile.price_adjust_amount !== 'undefined' ? profile.price_adjust_amount : 0;
-          round.checked = profile.price_adjust_round === 'integer';
-          prezeroEnable.checked = !!profile.prezero_enable;
-
-          const catIds = (profile.prezero_cats || []).map(function(id){ return String(id); });
-          prezeroCats.forEach(function(input){
-            input.checked = catIds.indexOf(String(input.value)) !== -1;
-            input.disabled = !prezeroEnable.checked;
-          });
-        }
-
-        if (profileSelect) {
-          profileSelect.addEventListener('change', function(){
-            setProfile(profiles[profileSelect.value]);
-          });
-        }
-      })();
-
-      const url = new URL(window.location.href);
-      const fromJob = url.searchParams.get('wcssd_job');
-      if (fromJob) {
-        jobId = fromJob;
-        area.style.display = 'block';
-        setNotice('success', 'Job created. Starting…');
-        url.searchParams.delete('wcssd_job');
-        window.history.replaceState({}, '', url.toString());
-        initResume().then(function(){
-          if (!running) {
-            running = true;
-            setNotice('info', 'Running…');
-            tick();
-          }
+      function renderPreview(rows) {
+        const body = byId('wcssd_preview_body');
+        body.innerHTML = '';
+        (rows || []).forEach(row => {
+          const tr = document.createElement('tr');
+          tr.className = 'wcssd-row-' + row.status;
+          const values = [
+            row.line_number || '—', row.operation, row.sku || '—',
+            value(row.old_qty) + ' → ' + value(row.target_qty),
+            value(row.old_price) + ' → ' + value(row.target_price),
+            row.status, row.message || ''
+          ];
+          values.forEach(item => { const td = document.createElement('td'); td.textContent = item; tr.appendChild(td); });
+          body.appendChild(tr);
         });
       }
 
-      const created = url.searchParams.get('wcssd_created');
-      if (created === '1') {
-        setNotice('success', 'Job created. Click Start/Resume.');
-        url.searchParams.delete('wcssd_created');
-        window.history.replaceState({}, '', url.toString());
+      function render(payload) {
+        const state = payload.state;
+        area.style.display = 'block';
+        byId('wcssd_job_label').textContent = 'Job ' + jobId;
+        byId('wcssd_status').textContent = state.status;
+        ['changed','unchanged','missing','invalid','updated','errors'].forEach(key => { byId('wcssd_' + key).textContent = state[key] || 0; });
+        const pct = state.total ? Math.round((state.processed / state.total) * 100) : 0;
+        byId('wcssd_bar').style.width = pct + '%';
+        byId('wcssd_start_btn').disabled = !state.can_apply;
+        byId('wcssd_rollback_btn').disabled = !state.can_rollback;
+        byId('wcssd_cancel_btn').disabled = ['completed','rolled_back','cancelled'].includes(state.status);
+        reportText = payload.report || '';
+        byId('wcssd_log').textContent = reportText;
+        byId('wcssd_export_btn').disabled = !reportText;
+        renderPreview(payload.preview);
+
+        if (state.status === 'invalid') notice('error', 'Import bloqué : corrigez les lignes invalides puis analysez le CSV à nouveau.');
+        else if (state.status === 'preview' && state.dry_run) notice('info', 'Prévisualisation terminée. Le mode sans écriture ne permet pas d’appliquer les changements.');
+        else if (state.status === 'preview') notice(
+          state.zero_warning ? 'warning' : 'success',
+          state.zero_warning
+            ? 'Prévisualisation prête. Attention : au moins 50 % des lignes ciblent un stock à zéro.'
+            : 'Prévisualisation prête. Vérifiez les changements avant de les appliquer.'
+        );
+        else if (state.status === 'completed') notice(state.errors ? 'warning' : 'success', 'Import terminé. Les anciennes valeurs restent disponibles pour un rollback.');
+        else if (state.status === 'rolled_back') notice('success', 'Rollback terminé : les anciennes valeurs ont été restaurées.');
+        else if (state.status === 'cancelled') notice('warning', 'Job annulé.');
+        else notice(
+          'info',
+          'Traitement durable en cours : ' + state.processed + '/' + state.total + '. Vous pouvez fermer cette page.'
+        );
+
+        clearTimeout(pollTimer);
+        if (['queued','running','cancelling','rolling_back'].includes(state.status)) pollTimer = setTimeout(refresh, 1500);
       }
+
+      async function refresh() {
+        if (!jobId) return;
+        try { render(await post('wcssd_job_status')); } catch (error) { notice('error', error.message); }
+      }
+
+      byId('wcssd_start_btn').addEventListener('click', async function(){
+        if (!jobId) return;
+        const warning = byId('wcssd_notice_area').textContent.indexOf('50 %') !== -1;
+        const question = warning ? 'Une grande partie du catalogue passera à zéro. Confirmer l’import ?' : 'Appliquer exactement les changements prévisualisés ?';
+        if (!window.confirm(question)) return;
+        try { render(await post('wcssd_start_job')); } catch (error) { notice('error', error.message); }
+      });
+      byId('wcssd_cancel_btn').addEventListener('click', async function(){
+        if (!jobId || !window.confirm('Annuler ce job ? Les changements déjà appliqués resteront disponibles pour rollback.')) return;
+        try { render(await post('wcssd_cancel_job')); } catch (error) { notice('error', error.message); }
+      });
+      byId('wcssd_rollback_btn').addEventListener('click', async function(){
+        if (!jobId || !window.confirm('Restaurer les valeurs enregistrées avant cet import ?')) return;
+        try { render(await post('wcssd_rollback_job')); } catch (error) { notice('error', error.message); }
+      });
+      byId('wcssd_export_btn').addEventListener('click', function(){
+        if (!reportText) return;
+        const url = URL.createObjectURL(new Blob([reportText], {type:'text/plain;charset=utf-8'}));
+        const link = document.createElement('a'); link.href = url; link.download = 'wc-stock-sync-' + jobId + '.txt'; link.click(); URL.revokeObjectURL(url);
+      });
+
+      const prezeroEnable = byId('wcssd_prezero_enable');
+      const prezeroCats = Array.from(document.querySelectorAll('input[name="wcssd_prezero_cats[]"]'));
+      function prezeroState(){ prezeroCats.forEach(input => { input.disabled = !prezeroEnable.checked; }); }
+      prezeroEnable.addEventListener('change', prezeroState); prezeroState();
+
+      byId('wcssd_profile_select').addEventListener('change', function(event){
+        const profile = profiles[event.target.value]; if (!profile) return;
+        byId('wcssd_profile_name').value = profile.name || '';
+        byId('wcssd_delimiter').value = profile.delimiter || 'auto';
+        byId('wcssd_col_sku').value = profile.columns && profile.columns.sku ? profile.columns.sku : 'Sku';
+        byId('wcssd_col_available').value = profile.columns && profile.columns.available ? profile.columns.available : 'Available';
+        byId('wcssd_col_price').value = profile.columns && profile.columns.price ? profile.columns.price : 'Price';
+        byId('wcssd_price_adjust').value = typeof profile.price_adjust_amount !== 'undefined' ? profile.price_adjust_amount : 0;
+        prezeroEnable.checked = !!profile.prezero_enable;
+        const selected = (profile.prezero_cats || []).map(String);
+        prezeroCats.forEach(input => { input.checked = selected.includes(String(input.value)); });
+        prezeroState();
+      });
+
+      const pageUrl = new URL(window.location.href);
+      const urlJob = pageUrl.searchParams.get('wcssd_job');
+      if (urlJob) {
+        jobId = urlJob; pageUrl.searchParams.delete('wcssd_job'); window.history.replaceState({}, '', pageUrl.toString());
+      }
+      if (jobId) refresh();
     })();
     </script>
     <?php
