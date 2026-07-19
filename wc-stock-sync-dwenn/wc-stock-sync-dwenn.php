@@ -1,11 +1,15 @@
 <?php
 /**
  * Plugin Name: WooCommerce Stock Sync - Dwenn
- * Description: Upload a CSV in wp-admin to update WooCommerce product/variation stock and price in AJAX chunks.
- * Version: 1.4.1
+ * Description: Validate and preview supplier CSV changes, then sync WooCommerce stock and prices in durable background jobs.
+ * Version: 2.0.0
  * Author: Dwenn Kaufmann
  * Author URI: https://dwenn.ch
  * Update URI: false
+ * Requires at least: 6.5
+ * Requires PHP: 7.4
+ * Requires Plugins: woocommerce
+ * WC requires at least: 8.0
  */
 
 if (!defined('ABSPATH')) exit;
@@ -18,5 +22,7 @@ require_once __DIR__ . '/includes/class-admin-page.php';
 require_once __DIR__ . '/includes/class-plugin.php';
 
 class_alias('WCSSD_Plugin', 'WCSSD_WooCommerce_Stock_Sync_Dwenn');
+
+register_activation_hook(__FILE__, ['WCSSD_Plugin', 'activate']);
 
 new WCSSD_Plugin();

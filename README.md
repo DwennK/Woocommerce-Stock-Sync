@@ -4,8 +4,9 @@ Small WooCommerce admin plugin to sync stock and regular price from a supplier C
 
 It is built for a simple workflow:
 - upload a CSV in wp-admin
-- create a resumable sync job
-- process products in AJAX chunks with live progress
+- validate every supplier row and preview the exact old-to-new changes
+- create a durable, resumable background job
+- process products with Action Scheduler and live progress
 - optionally pre-zero selected categories before the import
 
 ## What It Does
@@ -13,9 +14,11 @@ It is built for a simple workflow:
 - Updates WooCommerce products and variations by SKU
 - Syncs `stock_quantity`, stock status, and regular price
 - Resolves SKUs in one chunked database lookup for better performance
-- Processes updates in AJAX chunks to avoid long admin requests
-- Stores the job in a transient, with cleanup on finish or cancel
-- Supports dry run mode
+- Processes updates in durable background batches to avoid long admin requests
+- Stores normalized jobs, items, snapshots, and logs in dedicated database tables
+- Supports preview-only mode and explicit confirmation before live writes
+- Skips unchanged products and keeps rollback snapshots for completed imports
+- Keeps a recent per-user job history in wp-admin
 - Supports a fixed price adjustment with optional integer rounding
 - Supports pre-zero stock by selected product categories before sync
 - Auto-detects CSV delimiters: comma, semicolon, or tab
@@ -24,7 +27,7 @@ It is built for a simple workflow:
 
 ## Current Version
 
-- Plugin version: `1.4.1`
+- Plugin version: `2.0.0`
 
 ## Installation
 
@@ -54,12 +57,14 @@ Then activate it from the WordPress plugins screen.
 1. Open `Stock Sync` in wp-admin.
 2. Upload a supplier CSV.
 3. Choose your options:
-   - dry run or live mode
+   - preview-only or live mode
    - chunk size
    - optional price adjustment
    - optional pre-zero categories
-4. Start or resume the job.
-5. Watch progress, updated count, missing SKUs, errors, and the live log.
+4. Review changed, unchanged, missing, and invalid rows in the preview.
+5. Confirm the exact changes to start the durable job.
+6. Watch progress or close the page and return later.
+7. Roll back a completed import if the previous values must be restored.
 
 ## CSV Format
 
@@ -122,14 +127,15 @@ VAR-RED-S,0,59.00
 
 - Only products with an existing WooCommerce SKU are updated
 - Both simple products and variations are supported
-- If the CSV contains duplicate SKUs, the last row wins
+- Duplicate SKUs are reported as validation errors, including case-only duplicates
+- Ambiguous SKUs that match multiple WooCommerce records are blocked
 - Missing SKUs are counted and skipped
 
 ## Options
 
-### Dry run
+### Preview-only mode
 
-Simulates the sync without saving changes to WooCommerce products.
+Builds the complete old-to-new diff without allowing changes to be applied.
 
 ### Price adjustment
 
@@ -165,11 +171,12 @@ For variable products, the plugin also sets each variation stock to `0`.
 ## Technical Notes
 
 - Uses one chunked SKU lookup query instead of querying product-by-product
-- Uses AJAX chunk processing to reduce timeout risk
-- Uses transients for resumable jobs
+- Uses Action Scheduler with a WordPress Cron fallback for durable background processing
+- Uses dedicated job, item, and log tables instead of transient payloads
 - Does not keep the uploaded CSV permanently on disk
 - Includes nonce and capability checks on admin and AJAX actions
-- Keeps the finished job transient briefly so the report can be exported after completion
+- Keeps per-item before snapshots so completed imports can be rolled back
+- Uses a per-job lease to prevent overlapping batches
 
 ## Repository Layout
 
@@ -178,7 +185,7 @@ For variable products, the plugin also sets each variation stock to `0`.
 - `wc-stock-sync-dwenn/includes/class-admin-page.php`: wp-admin screen and AJAX UI
 - `wc-stock-sync-dwenn/includes/class-csv-parser.php`: CSV headers, number parsing, and row normalization
 - `wc-stock-sync-dwenn/includes/class-sku-resolver.php`: SKU-to-product lookup
-- `wc-stock-sync-dwenn/includes/class-job-store.php`: transient job persistence
+- `wc-stock-sync-dwenn/includes/class-job-store.php`: persistent job, item, log, and lock storage
 - `wc-stock-sync-dwenn/includes/class-stock-updater.php`: WooCommerce stock and price writes
 - `CHANGELOG.md`: release history
 - `dist/`: local build output, ignored by git
