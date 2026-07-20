@@ -35,3 +35,49 @@ jobs:
 
       - name: Version consistency
         run: composer check-version
+
+  php-compatibility:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        php: ["7.4", "8.0", "8.1", "8.2", "8.3"]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+
+      - name: Plugin syntax compatibility
+        run: find wc-stock-sync-dwenn -name '*.php' -print -exec php -l {} \;
+
+  wordpress-woocommerce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install wp-env
+        run: npm ci --ignore-scripts
+
+      - name: Start WordPress and WooCommerce
+        run: npm run wp-env:start
+
+      - name: Run integration smoke test
+        run: npm run test:integration
+
+      - name: Stop wp-env
+        if: always()
+        run: npm run wp-env:stop

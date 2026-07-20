@@ -2,6 +2,7 @@
 /dist/
 /*.zip
 /vendor/
+/node_modules/
 
 # Temporary local checks / extraction folders
 /__zipcheck/
