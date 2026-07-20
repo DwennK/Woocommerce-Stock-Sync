@@ -23,17 +23,33 @@ class WCSSD_Plugin {
     add_action('plugins_loaded', ['WCSSD_JobStore', 'maybe_upgrade'], 20);
     add_action('admin_menu', [$this, 'admin_menu']);
     add_action('admin_post_wcssd_create_job', [$this, 'handle_create_job']);
+    add_action('admin_post_wcssd_export_job', [$this, 'handle_export_job']);
     add_action('wp_ajax_wcssd_job_status', [$this, 'ajax_job_status']);
     add_action('wp_ajax_wcssd_start_job', [$this, 'ajax_start_job']);
     add_action('wp_ajax_wcssd_run_chunk', [$this, 'ajax_job_status']);
     add_action('wp_ajax_wcssd_cancel_job', [$this, 'ajax_cancel_job']);
     add_action('wp_ajax_wcssd_rollback_job', [$this, 'ajax_rollback_job']);
+    add_action('wp_ajax_wcssd_delete_job', [$this, 'ajax_delete_job']);
+    add_action('wcssd_analyze_job', [$this, 'analyze_job']);
     add_action('wcssd_process_job', [$this, 'process_job']);
     add_action('wcssd_rollback_job', [$this, 'process_rollback']);
+    add_action('wcssd_cleanup_jobs', [$this, 'cleanup_jobs']);
+    add_action('init', [__CLASS__, 'ensure_cleanup_schedule']);
   }
 
   public static function activate() {
     WCSSD_JobStore::install();
+    self::ensure_cleanup_schedule();
+  }
+
+  public static function deactivate() {
+    wp_clear_scheduled_hook('wcssd_cleanup_jobs');
+  }
+
+  public static function ensure_cleanup_schedule() {
+    if (!wp_next_scheduled('wcssd_cleanup_jobs')) {
+      wp_schedule_event(time() + HOUR_IN_SECONDS, 'daily', 'wcssd_cleanup_jobs');
+    }
   }
 
   public function admin_menu() {
@@ -68,6 +84,7 @@ class WCSSD_Plugin {
     $chunk_size = isset($_POST['wcssd_chunk']) ? (int)$_POST['wcssd_chunk'] : 25;
     $chunk_size = max(5, min(200, $chunk_size));
     $dry_run = !empty($_POST['wcssd_dry_run']);
+    $skip_invalid = !empty($_POST['wcssd_skip_invalid']);
     $prezero_enable = !empty($_POST['wcssd_prezero_enable']);
     $prezero_cats = [];
     if ($prezero_enable && !empty($_POST['wcssd_prezero_cats']) && is_array($_POST['wcssd_prezero_cats'])) {
@@ -97,154 +114,240 @@ class WCSSD_Plugin {
         'columns' => $column_headers,
         'price_adjust_amount' => $adjust_amount,
         'price_adjust_round' => $adjust_round,
+        'skip_invalid' => $skip_invalid,
         'prezero_enable' => $prezero_enable,
         'prezero_cats' => $prezero_cats,
       ]);
     }
 
-    try {
-      $parsed = $this->csv_parser->parse_file($tmp, $adjust_amount, $adjust_round, $delimiter, $column_headers);
-    } catch (RuntimeException $e) {
-      wp_die(esc_html($e->getMessage()));
+    $csv_path = wp_tempnam(isset($_FILES['wcssd_csv']['name']) ? sanitize_file_name(wp_unslash($_FILES['wcssd_csv']['name'])) : 'stock-sync.csv');
+    if (!$csv_path || !move_uploaded_file($tmp, $csv_path)) {
+      if ($csv_path && file_exists($csv_path)) unlink($csv_path);
+      wp_die('Unable to retain the CSV for background analysis.');
     }
 
-    $zero_targets = 0;
-    foreach ($parsed['rows'] as $row) {
-      if ((int)$row['qty'] === 0) $zero_targets++;
-    }
-    $zero_ratio = count($parsed['rows']) ? $zero_targets / count($parsed['rows']) : 0;
     $job_id = $this->job_store->make_job_id();
     $job_db_id = $this->job_store->create([
       'job_id' => $job_id,
       'owner_user_id' => $this->job_store->current_user_id_safe(),
-      'status' => 'building',
+      'status' => 'analyzing',
       'dry_run' => $dry_run,
       'chunk' => $chunk_size,
-      'delimiter' => $parsed['delimiter'],
+      'delimiter' => $delimiter,
       'profile_name' => $profile_name,
       'config' => [
+        'csv_path' => $csv_path,
+        'adjust_amount' => $adjust_amount,
+        'adjust_round' => $adjust_round,
+        'requested_delimiter' => $delimiter,
+        'column_headers' => $column_headers,
+        'skip_invalid' => $skip_invalid,
         'prezero_enable' => $prezero_enable,
         'prezero_cats' => $prezero_cats,
-        'zero_ratio' => $zero_ratio,
-        'parser_warnings' => $parsed['warnings'],
+        'zero_ratio' => 0,
+        'parser_warnings' => [],
       ],
     ]);
-    if (!$job_db_id) wp_die('Unable to create persistent sync job.');
-
-    $this->job_store->add_log($job_db_id, 'info', 'Job created; CSV validation and preview started.');
-    foreach ($parsed['errors'] as $error) {
-      $this->job_store->insert_item($job_db_id, [
-        'line' => $error['line'],
-        'operation' => 'sync',
-        'sku' => $error['field'] === 'sku' ? $error['value'] : '',
-        'status' => 'invalid',
-        'message' => $error['field'] . ': ' . $error['message'],
-        'raw' => $error,
-      ]);
+    if (!$job_db_id) {
+      unlink($csv_path);
+      wp_die('Unable to create persistent sync job.');
     }
 
-    $prezero_product_ids = $prezero_enable ? $this->get_prezero_product_ids($prezero_cats) : [];
-    $prezero_affected_ids = [];
-    foreach ($prezero_product_ids as $product_id) {
-      $snapshot = $this->stock_updater->snapshot_product_tree($product_id);
-      if (!$snapshot) continue;
-      $needs_zero = $this->stock_updater->product_tree_needs_zero($snapshot);
-      if ($needs_zero) {
-        foreach ($snapshot['nodes'] as $node) {
-          $prezero_affected_ids[(int)$node['product_id']] = true;
-        }
-      }
-      $product = wc_get_product($product_id);
-      $this->job_store->insert_item($job_db_id, [
-        'operation' => 'prezero',
-        'sku' => 'PREZERO-' . $product_id,
-        'product_id' => $product_id,
-        'product_type' => $product ? $product->get_type() : 'product',
-        'qty' => 0,
-        'price' => null,
-        'original' => $snapshot,
-        'status' => $needs_zero ? 'ready' : 'unchanged',
-        'message' => 'Pre-zero category preview.',
-      ]);
-    }
-
-    $resolved = $this->sku_resolver->resolve_with_diagnostics($parsed['skus']);
-    foreach ($parsed['rows'] as $row) {
-      $sku = $row['sku'];
-      $raw = [
-        'stock' => $row['raw_stock'],
-        'price' => $row['raw_price'],
-        'original_supplier_price' => $row['orig_price'],
-      ];
-      if (isset($resolved['ambiguous'][$sku])) {
-        $this->job_store->insert_item($job_db_id, [
-          'line' => $row['line'],
-          'sku' => $sku,
-          'qty' => $row['qty'],
-          'price' => $row['price'],
-          'status' => 'invalid',
-          'message' => 'SKU matches multiple WooCommerce products: ' . implode(', ', $resolved['ambiguous'][$sku]),
-          'raw' => $raw,
-        ]);
-        continue;
-      }
-      if (!isset($resolved['map'][$sku])) {
-        $this->job_store->insert_item($job_db_id, [
-          'line' => $row['line'],
-          'sku' => $sku,
-          'qty' => $row['qty'],
-          'price' => $row['price'],
-          'status' => 'missing',
-          'message' => 'SKU not found in WooCommerce.',
-          'raw' => $raw,
-        ]);
-        continue;
-      }
-
-      $info = $resolved['map'][$sku];
-      $product = wc_get_product((int)$info['post_id']);
-      if (!$product) {
-        $this->job_store->insert_item($job_db_id, [
-          'line' => $row['line'],
-          'sku' => $sku,
-          'status' => 'missing',
-          'message' => 'Resolved product can no longer be loaded.',
-          'raw' => $raw,
-        ]);
-        continue;
-      }
-
-      $snapshot = $this->stock_updater->snapshot_product($product);
-      $needs_update = isset($prezero_affected_ids[(int)$product->get_id()])
-        || $this->stock_updater->product_needs_update($product, (int)$row['qty'], (string)$row['price']);
-      $this->job_store->insert_item($job_db_id, [
-        'line' => $row['line'],
-        'sku' => $sku,
-        'product_id' => (int)$product->get_id(),
-        'product_type' => $info['post_type'] === 'product_variation' ? 'variation' : 'product',
-        'qty' => $row['qty'],
-        'price' => $row['price'],
-        'original' => $snapshot,
-        'raw' => $raw,
-        'status' => $needs_update ? 'ready' : 'unchanged',
-        'message' => $needs_update ? 'Change ready for confirmation.' : 'No change required.',
-      ]);
-    }
-
-    $counts = $this->job_store->counts($job_db_id);
-    $invalid = isset($counts['sync']['invalid']) ? $counts['sync']['invalid'] : 0;
-    $status = $invalid > 0 ? 'invalid' : 'preview';
-    $this->job_store->update_job($job_id, ['status' => $status]);
-    $this->job_store->add_log(
-      $job_db_id,
-      $invalid > 0 ? 'error' : 'info',
-      $invalid > 0 ? "Preview blocked by {$invalid} validation error(s)." : 'Preview ready; no WooCommerce data has been changed.'
-    );
+    $this->job_store->add_log($job_db_id, 'info', 'Job created; background CSV analysis queued.');
     $this->job_store->remember_for_current_user($job_id);
+    $this->schedule('wcssd_analyze_job', $job_id);
+    $this->schedule_delayed('wcssd_analyze_job', $job_id, 620);
 
     wp_safe_redirect(admin_url('admin.php?page=' . self::MENU_SLUG . '&wcssd_job=' . rawurlencode($job_id)));
     // phpcs:enable WordPress.Security.NonceVerification.Missing
     exit;
+  }
+
+  public function analyze_job($job_id) {
+    $job = $this->job_store->get($job_id);
+    if (!$job || $job['status'] !== 'analyzing') return;
+
+    $token = wp_generate_password(32, false, false);
+    if (!$this->job_store->acquire_lock($job_id, $token, 600)) {
+      $this->schedule_delayed('wcssd_analyze_job', $job_id, 120);
+      return;
+    }
+
+    $config = !empty($job['config']) ? $job['config'] : [];
+    $csv_path = !empty($config['csv_path']) ? (string)$config['csv_path'] : '';
+    try {
+      if ($csv_path === '' || !is_readable($csv_path)) {
+        throw new RuntimeException('Temporary CSV is no longer available for analysis.');
+      }
+
+      $this->job_store->clear_items($job['id']);
+      $parsed = $this->csv_parser->parse_file(
+        $csv_path,
+        isset($config['adjust_amount']) ? (float)$config['adjust_amount'] : 0.0,
+        !empty($config['adjust_round']) ? (string)$config['adjust_round'] : 'none',
+        !empty($config['requested_delimiter']) ? (string)$config['requested_delimiter'] : 'auto',
+        !empty($config['column_headers']) && is_array($config['column_headers']) ? $config['column_headers'] : []
+      );
+
+      foreach ($parsed['errors'] as $error) {
+        $this->insert_job_item_or_fail($job['id'], [
+          'line' => $error['line'],
+          'operation' => 'sync',
+          'sku' => !empty($error['sku']) ? $error['sku'] : ($error['field'] === 'sku' ? $error['value'] : ''),
+          'status' => self::validation_error_status($error),
+          'message' => $error['field'] . ': ' . $error['message'],
+          'raw' => $error,
+        ]);
+      }
+
+      $prezero_enable = !empty($config['prezero_enable']);
+      $prezero_cats = !empty($config['prezero_cats']) && is_array($config['prezero_cats']) ? $config['prezero_cats'] : [];
+      $prezero_product_ids = $prezero_enable ? $this->get_prezero_product_ids($prezero_cats) : [];
+      $prezero_affected_ids = [];
+      foreach ($prezero_product_ids as $product_id) {
+        $snapshot = $this->stock_updater->snapshot_product_tree($product_id);
+        if (!$snapshot) continue;
+        $needs_zero = $this->stock_updater->product_tree_needs_zero($snapshot);
+        if ($needs_zero) {
+          foreach ($snapshot['nodes'] as $node) {
+            $prezero_affected_ids[(int)$node['product_id']] = true;
+          }
+        }
+        $product = wc_get_product($product_id);
+        $this->insert_job_item_or_fail($job['id'], [
+          'operation' => 'prezero',
+          'sku' => 'PREZERO-' . $product_id,
+          'product_id' => $product_id,
+          'product_type' => $product ? $product->get_type() : 'product',
+          'qty' => 0,
+          'price' => null,
+          'original' => $snapshot,
+          'status' => $needs_zero ? 'ready' : 'unchanged',
+          'message' => 'Pre-zero category preview.',
+        ]);
+      }
+
+      $matched_rows = 0;
+      $matched_zero_targets = 0;
+      $resolved = $this->sku_resolver->resolve_with_diagnostics($parsed['skus']);
+      foreach ($parsed['rows'] as $row) {
+        $sku = $row['sku'];
+        $raw = [
+          'stock' => $row['raw_stock'],
+          'price' => $row['raw_price'],
+          'original_supplier_price' => $row['orig_price'],
+        ];
+        if (isset($resolved['ambiguous'][$sku])) {
+          $this->insert_job_item_or_fail($job['id'], [
+            'line' => $row['line'],
+            'sku' => $sku,
+            'qty' => $row['qty'],
+            'price' => $row['price'],
+            'status' => 'conflict',
+            'message' => 'SKU matches multiple WooCommerce products: ' . implode(', ', $resolved['ambiguous'][$sku]),
+            'raw' => $raw,
+          ]);
+          continue;
+        }
+        if (!isset($resolved['map'][$sku])) {
+          $this->insert_job_item_or_fail($job['id'], [
+            'line' => $row['line'],
+            'sku' => $sku,
+            'qty' => $row['qty'],
+            'price' => $row['price'],
+            'status' => 'missing',
+            'message' => 'SKU not found in WooCommerce.',
+            'raw' => $raw,
+          ]);
+          continue;
+        }
+
+        $info = $resolved['map'][$sku];
+        $product = wc_get_product((int)$info['post_id']);
+        if (!$product) {
+          $this->insert_job_item_or_fail($job['id'], [
+            'line' => $row['line'],
+            'sku' => $sku,
+            'status' => 'missing',
+            'message' => 'Resolved product can no longer be loaded.',
+            'raw' => $raw,
+          ]);
+          continue;
+        }
+
+        $matched_rows++;
+        if ((int)$row['qty'] === 0) $matched_zero_targets++;
+        $snapshot = $this->stock_updater->snapshot_product($product);
+        $needs_update = isset($prezero_affected_ids[(int)$product->get_id()])
+          || $this->stock_updater->product_needs_update($product, (int)$row['qty'], (string)$row['price']);
+        $this->insert_job_item_or_fail($job['id'], [
+          'line' => $row['line'],
+          'sku' => $sku,
+          'product_id' => (int)$product->get_id(),
+          'product_type' => $info['post_type'] === 'product_variation' ? 'variation' : 'product',
+          'qty' => $row['qty'],
+          'price' => $row['price'],
+          'original' => $snapshot,
+          'raw' => $raw,
+          'status' => $needs_update ? 'ready' : 'unchanged',
+          'message' => $needs_update ? 'Change ready for confirmation.' : 'No change required.',
+        ]);
+      }
+
+      $fresh_job = $this->job_store->get($job_id);
+      if (!$fresh_job || $fresh_job['status'] !== 'analyzing') return;
+
+      $config['zero_ratio'] = $matched_rows ? $matched_zero_targets / $matched_rows : 0;
+      $config['parser_warnings'] = $parsed['warnings'];
+      $config['csv_path'] = '';
+      $counts = $this->job_store->counts($job['id']);
+      $sync = isset($counts['sync']) ? $counts['sync'] : [];
+      $invalid = isset($sync['invalid']) ? (int)$sync['invalid'] : 0;
+      $conflicts = isset($sync['conflict']) ? (int)$sync['conflict'] : 0;
+      $skip_invalid = !empty($config['skip_invalid']);
+      $blocked = $conflicts > 0 || ($invalid > 0 && !$skip_invalid);
+      $status = $blocked ? 'invalid' : 'preview';
+      $this->job_store->update_job($job_id, [
+        'status' => $status,
+        'delimiter' => $parsed['delimiter'],
+        'config' => $config,
+      ]);
+      $this->job_store->add_log(
+        $job['id'],
+        $blocked ? 'error' : ($invalid > 0 ? 'warning' : 'info'),
+        $blocked
+          ? "Preview blocked by {$invalid} invalid row(s) and {$conflicts} SKU conflict(s)."
+          : ($invalid > 0
+            ? "Preview ready; {$invalid} invalid row(s) will be skipped after confirmation."
+            : 'Preview ready; no WooCommerce data has been changed.')
+      );
+    } catch (Throwable $e) {
+      $fresh_job = $this->job_store->get($job_id);
+      if ($fresh_job && $fresh_job['status'] === 'analyzing') {
+        $config['csv_path'] = '';
+        $this->job_store->update_job($job_id, [
+          'status' => 'analysis_failed',
+          'completed_at' => gmdate('Y-m-d H:i:s'),
+          'config' => $config,
+        ]);
+        $this->job_store->add_log($job['id'], 'error', 'CSV analysis failed: ' . $e->getMessage());
+      }
+    } finally {
+      if ($csv_path !== '' && file_exists($csv_path)) unlink($csv_path);
+      $this->job_store->release_lock($job_id, $token);
+    }
+  }
+
+  public static function validation_error_status(array $error) {
+    return !empty($error['message']) && strpos((string)$error['message'], 'Duplicate SKU') === 0
+      ? 'conflict'
+      : 'invalid';
+  }
+
+  private function insert_job_item_or_fail($job_db_id, array $item) {
+    if (!$this->job_store->insert_item($job_db_id, $item)) {
+      throw new RuntimeException('Unable to persist an analyzed CSV row.');
+    }
   }
 
   public function ajax_job_status() {
@@ -256,7 +359,7 @@ class WCSSD_Plugin {
     $job = $this->get_ajax_job();
     $state = $this->job_state($job);
     if ($job['status'] !== 'preview' || $job['dry_run'] || !$state['can_apply']) {
-      wp_send_json_error(['message' => 'This preview cannot be applied. Resolve validation errors and use live mode.'], 409);
+      wp_send_json_error(['message' => 'This preview cannot be applied. Resolve SKU conflicts, review validation errors, and use live mode.'], 409);
     }
 
     $now = gmdate('Y-m-d H:i:s');
@@ -270,7 +373,7 @@ class WCSSD_Plugin {
 
   public function ajax_cancel_job() {
     $job = $this->get_ajax_job();
-    if (in_array($job['status'], ['completed', 'rolled_back', 'cancelled'], true)) {
+    if (in_array($job['status'], ['completed', 'rolled_back', 'rollback_partial', 'cancelled', 'analysis_failed'], true)) {
       wp_send_json_error(['message' => 'This job is already finished.'], 409);
     }
 
@@ -280,6 +383,7 @@ class WCSSD_Plugin {
       'completed_at' => $status === 'cancelled' ? gmdate('Y-m-d H:i:s') : null,
     ]);
     $this->job_store->add_log($job['id'], 'warning', 'Cancellation requested.');
+    $this->cleanup_job_csv($job);
     $this->job_store->clear_for_current_user();
     $job = $this->job_store->get($job['job_id']);
     wp_send_json_success($this->response_payload($job));
@@ -297,6 +401,59 @@ class WCSSD_Plugin {
     $this->schedule_delayed('wcssd_rollback_job', $job['job_id'], 620);
     $job = $this->job_store->get($job['job_id']);
     wp_send_json_success($this->response_payload($job));
+  }
+
+  public function ajax_delete_job() {
+    $job = $this->get_ajax_job();
+    $active = ['analyzing', 'queued', 'running', 'cancelling', 'rolling_back'];
+    if (in_array($job['status'], $active, true)) {
+      wp_send_json_error(['message' => 'Cancel the active job before deleting it.'], 409);
+    }
+
+    $this->cleanup_job_csv($job);
+    if (!$this->job_store->delete($job['job_id'])) {
+      wp_send_json_error(['message' => 'Unable to delete this job.'], 500);
+    }
+    $this->job_store->clear_for_current_user();
+    wp_send_json_success(['deleted' => true]);
+  }
+
+  public function handle_export_job() {
+    if (!current_user_can('manage_woocommerce')) wp_die('Insufficient permissions.');
+    check_admin_referer('wcssd_export_job');
+
+    // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Verified directly above.
+    $job_id = isset($_GET['job_id']) ? sanitize_text_field(wp_unslash($_GET['job_id'])) : '';
+    $job = $job_id ? $this->job_store->get($job_id) : false;
+    if (!$job || !$this->job_store->current_user_can_access_job($job)) wp_die('Job not found or access denied.');
+
+    nocache_headers();
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename="wc-stock-sync-' . sanitize_file_name($job_id) . '.csv"');
+    $output = fopen('php://output', 'w');
+    if (!$output) wp_die('Unable to create CSV export.');
+    fwrite($output, "\xEF\xBB\xBF");
+    fputcsv($output, ['line', 'operation', 'sku', 'product_id', 'type', 'old_stock', 'new_stock', 'raw_stock', 'old_price', 'new_price', 'raw_price', 'status', 'detail'], ';', '"', '\\');
+    foreach ($this->job_store->export_rows($job['id']) as $row) {
+      $cells = [
+        $row['line_number'],
+        $row['operation'],
+        $row['sku'],
+        $row['product_id'],
+        $row['product_type'],
+        $row['old_qty'],
+        $row['target_qty'],
+        $row['raw_stock'],
+        $row['old_price'],
+        $row['target_price'],
+        $row['raw_price'],
+        $row['status'],
+        $row['message'],
+      ];
+      fputcsv($output, array_map([__CLASS__, 'csv_export_cell'], $cells), ';', '"', '\\');
+    }
+    fclose($output);
+    exit;
   }
 
   public function process_job($job_id) {
@@ -420,8 +577,19 @@ class WCSSD_Plugin {
       if ($remaining) {
         $should_continue = true;
       } else {
-        $this->job_store->update_job($job_id, ['status' => 'rolled_back', 'completed_at' => gmdate('Y-m-d H:i:s')]);
-        $this->job_store->add_log($job['id'], 'warning', 'Rollback completed.');
+        $counts = $this->job_store->counts($job['id']);
+        $sync_failed = isset($counts['sync']['rollback_failed']) ? (int)$counts['sync']['rollback_failed'] : 0;
+        $prezero_failed = isset($counts['prezero']['rollback_failed']) ? (int)$counts['prezero']['rollback_failed'] : 0;
+        $rollback_failed = $sync_failed + $prezero_failed;
+        $status = self::rollback_completion_status($rollback_failed);
+        $this->job_store->update_job($job_id, ['status' => $status, 'completed_at' => gmdate('Y-m-d H:i:s')]);
+        $this->job_store->add_log(
+          $job['id'],
+          $rollback_failed > 0 ? 'error' : 'warning',
+          $rollback_failed > 0
+            ? "Rollback completed with {$rollback_failed} conflict(s) or failure(s)."
+            : 'Rollback completed.'
+        );
       }
     } finally {
       $this->job_store->release_lock($job_id, $token);
@@ -514,11 +682,33 @@ class WCSSD_Plugin {
   }
 
   private function response_payload(array $job) {
+    // phpcs:disable WordPress.Security.NonceVerification.Missing -- AJAX nonce is verified before this method is called.
+    $preview_status = isset($_POST['preview_status']) ? sanitize_key(wp_unslash($_POST['preview_status'])) : 'all';
+    $preview_search = isset($_POST['preview_search']) ? sanitize_text_field(wp_unslash($_POST['preview_search'])) : '';
+    $preview_page = isset($_POST['preview_page']) ? max(1, absint($_POST['preview_page'])) : 1;
+    // phpcs:enable WordPress.Security.NonceVerification.Missing
+    $per_page = 100;
+    $preview_total = $this->job_store->preview_count($job['id'], $preview_status, $preview_search);
+    $preview_pages = max(1, (int)ceil($preview_total / $per_page));
+    $preview_page = min($preview_page, $preview_pages);
     return [
       'state' => $this->job_state($job),
-      'preview' => $this->job_store->preview($job['id'], 100),
+      'preview' => $this->job_store->preview(
+        $job['id'],
+        $per_page,
+        ($preview_page - 1) * $per_page,
+        $preview_status,
+        $preview_search
+      ),
+      'preview_meta' => [
+        'page' => $preview_page,
+        'pages' => $preview_pages,
+        'total' => $preview_total,
+        'status' => $preview_status,
+        'search' => $preview_search,
+      ],
       'report' => $this->job_store->report($job['id']),
-      'done' => in_array($job['status'], ['completed', 'rolled_back', 'cancelled'], true),
+      'done' => in_array($job['status'], ['completed', 'rolled_back', 'rollback_partial', 'cancelled', 'analysis_failed'], true),
     ];
   }
 
@@ -539,7 +729,9 @@ class WCSSD_Plugin {
     $change_total = $ready + $processing + $applied + $failed + $skipped + $rolled_back;
     $processed = $applied + $failed + $skipped + $rolled_back;
     $invalid = $count($sync, 'invalid');
+    $conflicts = $count($sync, 'conflict');
     $config = !empty($job['config']) ? $job['config'] : [];
+    $skip_invalid = !empty($config['skip_invalid']);
 
     return [
       'status' => $job['status'],
@@ -552,7 +744,8 @@ class WCSSD_Plugin {
       'unchanged' => $count($sync, 'unchanged') + $count($sync, 'skipped'),
       'missing' => $count($sync, 'missing'),
       'invalid' => $invalid,
-      'errors' => $invalid + $failed + $count($sync, 'rollback_failed') + $count($prezero, 'rollback_failed'),
+      'conflicts' => $conflicts,
+      'errors' => $invalid + $conflicts + $failed + $count($sync, 'rollback_failed') + $count($prezero, 'rollback_failed'),
       'failed' => $failed,
       'rolled_back' => $rolled_back,
       'prezero_processed' => $count($prezero, 'applied') + $count($prezero, 'rolled_back'),
@@ -561,10 +754,37 @@ class WCSSD_Plugin {
       'delimiter' => self::delimiter_label($job['delimiter']),
       'profile' => $job['profile_name'],
       'zero_warning' => !empty($config['zero_ratio']) && (float)$config['zero_ratio'] >= 0.5,
-      'can_apply' => $job['status'] === 'preview' && empty($job['dry_run']) && $invalid === 0 && $ready > 0,
+      'skip_invalid' => $skip_invalid,
+      'can_apply' => $job['status'] === 'preview' && empty($job['dry_run']) && $conflicts === 0 && ($invalid === 0 || $skip_invalid) && $ready > 0,
       'can_rollback' => in_array($job['status'], ['completed', 'cancelled'], true) && $applied > 0,
-      'done' => in_array($job['status'], ['completed', 'rolled_back', 'cancelled'], true),
+      'can_delete' => !in_array($job['status'], ['analyzing', 'queued', 'running', 'cancelling', 'rolling_back'], true),
+      'done' => in_array($job['status'], ['completed', 'rolled_back', 'rollback_partial', 'cancelled', 'analysis_failed'], true),
     ];
+  }
+
+  public function cleanup_jobs() {
+    $days = max(1, (int)apply_filters('wcssd_job_retention_days', 30));
+    $cutoff = gmdate('Y-m-d H:i:s', time() - ($days * DAY_IN_SECONDS));
+    $this->job_store->cleanup_terminal_before($cutoff);
+  }
+
+  public static function rollback_completion_status($failed_count) {
+    return (int)$failed_count > 0 ? 'rollback_partial' : 'rolled_back';
+  }
+
+  public static function csv_export_cell($value) {
+    $value = (string)$value;
+    return preg_match('/^[=+\-@\t\r]/', $value) ? "'" . $value : $value;
+  }
+
+  private function cleanup_job_csv(array $job) {
+    $config = !empty($job['config']) && is_array($job['config']) ? $job['config'] : [];
+    $csv_path = !empty($config['csv_path']) ? (string)$config['csv_path'] : '';
+    if ($csv_path !== '' && file_exists($csv_path)) unlink($csv_path);
+    if ($csv_path !== '') {
+      $config['csv_path'] = '';
+      $this->job_store->update_job($job['job_id'], ['config' => $config]);
+    }
   }
 
   private static function delimiter_label($delimiter) {

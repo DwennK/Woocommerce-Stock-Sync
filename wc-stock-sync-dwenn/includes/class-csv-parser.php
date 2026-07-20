@@ -187,10 +187,10 @@ class WCSSD_CsvParser {
         $qty = $this->normalize_stock($raw_stock);
         $price = $this->normalize_price($raw_price);
         if ($qty === null) {
-          $errors[] = $this->validation_error($line_number, 'available', $raw_stock, 'Stock must be a non-negative integer.');
+          $errors[] = $this->validation_error($line_number, 'available', $raw_stock, 'Stock must be a non-negative integer.', $sku);
         }
         if ($price === null) {
-          $errors[] = $this->validation_error($line_number, 'price', $raw_price, 'Price must be a non-negative number.');
+          $errors[] = $this->validation_error($line_number, 'price', $raw_price, 'Price must be a non-negative number.', $sku);
         }
         if ($qty === null || $price === null) {
           continue;
@@ -202,7 +202,7 @@ class WCSSD_CsvParser {
           $adj_f = round($adj_f);
         }
         if (!is_finite($adj_f) || $adj_f < 0) {
-          $errors[] = $this->validation_error($line_number, 'price', $raw_price, 'Adjusted price must not be negative.');
+          $errors[] = $this->validation_error($line_number, 'price', $raw_price, 'Adjusted price must not be negative.', $sku);
           continue;
         }
         $adj_price = number_format($adj_f, 2, '.', '');
@@ -247,11 +247,12 @@ class WCSSD_CsvParser {
     ];
   }
 
-  private function validation_error($line, $field, $value, $message) {
+  private function validation_error($line, $field, $value, $message, $sku = '') {
     return [
       'line' => (int)$line,
       'field' => (string)$field,
       'value' => (string)$value,
+      'sku' => (string)$sku,
       'message' => (string)$message,
     ];
   }

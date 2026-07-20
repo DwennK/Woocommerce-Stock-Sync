@@ -5,7 +5,7 @@ if (!defined('ABSPATH')) exit;
 // phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.PreparedSQL.NotPrepared -- Internal table names are derived from $wpdb->prefix; all values use prepare(), insert(), update(), or delete().
 
 class WCSSD_JobStore {
-  const DB_VERSION = '2.0.0';
+  const DB_VERSION = '2.1.0';
   const DB_VERSION_OPTION = 'wcssd_db_version';
 
   private $jobs_table;
@@ -70,6 +70,7 @@ class WCSSD_JobStore {
       PRIMARY KEY  (id),
       KEY job_status (job_id,status),
       KEY job_operation (job_id,operation,status),
+      KEY job_line (job_id,line_number),
       KEY job_product (job_id,product_id),
       KEY sku (sku)
     ) {$charset};");
@@ -215,11 +216,11 @@ class WCSSD_JobStore {
   public function update_job($job_id, array $data) {
     global $wpdb;
 
-    $allowed = ['status', 'started_at', 'completed_at', 'lock_token', 'lock_expires'];
+    $allowed = ['status', 'started_at', 'completed_at', 'lock_token', 'lock_expires', 'delimiter', 'config'];
     $update = ['updated_at' => gmdate('Y-m-d H:i:s')];
     foreach ($allowed as $field) {
       if (array_key_exists($field, $data)) {
-        $update[$field] = $data[$field];
+        $update[$field] = $field === 'config' ? wp_json_encode($data[$field]) : $data[$field];
       }
     }
     return (bool)$wpdb->update($this->jobs_table, $update, ['job_key' => $job_id]);
@@ -240,16 +241,82 @@ class WCSSD_JobStore {
     return $counts;
   }
 
-  public function preview($job_db_id, $limit = 100) {
+  public function preview($job_db_id, $limit = 100, $offset = 0, $status = 'all', $search = '') {
+    global $wpdb;
+
+    $where = 'job_id = %d';
+    $params = [(int)$job_db_id];
+    $allowed_statuses = [
+      'ready', 'unchanged', 'missing', 'invalid', 'conflict', 'processing', 'applied', 'skipped',
+      'failed', 'rolled_back', 'rollback_processing', 'rollback_failed',
+    ];
+    if (in_array($status, $allowed_statuses, true)) {
+      $where .= ' AND status = %s';
+      $params[] = $status;
+    }
+    $search = trim((string)$search);
+    if ($search !== '') {
+      $where .= ' AND sku LIKE %s';
+      $params[] = '%' . $wpdb->esc_like($search) . '%';
+    }
+    $params[] = max(1, min(500, (int)$limit));
+    $params[] = max(0, (int)$offset);
+    $sql = $wpdb->prepare(
+      "SELECT line_number,operation,sku,product_id,product_type,target_qty,target_price,original_data,status,message
+       FROM {$this->items_table} WHERE {$where}
+       ORDER BY CASE WHEN status IN ('conflict','invalid') THEN 0 ELSE 1 END,operation DESC,line_number ASC,id ASC
+       LIMIT %d OFFSET %d",
+      ...$params
+    );
+    $rows = $wpdb->get_results($sql, ARRAY_A);
+    return $this->prepare_rows_for_output($rows);
+  }
+
+  public function preview_count($job_db_id, $status = 'all', $search = '') {
+    global $wpdb;
+
+    $where = 'job_id = %d';
+    $params = [(int)$job_db_id];
+    $allowed_statuses = [
+      'ready', 'unchanged', 'missing', 'invalid', 'conflict', 'processing', 'applied', 'skipped',
+      'failed', 'rolled_back', 'rollback_processing', 'rollback_failed',
+    ];
+    if (in_array($status, $allowed_statuses, true)) {
+      $where .= ' AND status = %s';
+      $params[] = $status;
+    }
+    $search = trim((string)$search);
+    if ($search !== '') {
+      $where .= ' AND sku LIKE %s';
+      $params[] = '%' . $wpdb->esc_like($search) . '%';
+    }
+    $sql = $wpdb->prepare("SELECT COUNT(*) FROM {$this->items_table} WHERE {$where}", ...$params);
+    return (int)$wpdb->get_var($sql);
+  }
+
+  public function export_rows($job_db_id) {
     global $wpdb;
 
     $sql = $wpdb->prepare(
-      "SELECT line_number,operation,sku,product_id,product_type,target_qty,target_price,original_data,status,message
-       FROM {$this->items_table} WHERE job_id = %d ORDER BY operation DESC,line_number ASC,id ASC LIMIT %d",
-      (int)$job_db_id,
-      max(1, min(500, (int)$limit))
+      "SELECT line_number,operation,sku,product_id,product_type,target_qty,target_price,original_data,raw_data,status,message
+       FROM {$this->items_table} WHERE job_id = %d ORDER BY line_number ASC,id ASC",
+      (int)$job_db_id
     );
-    $rows = $wpdb->get_results($sql, ARRAY_A);
+    $rows = $this->prepare_rows_for_output($wpdb->get_results($sql, ARRAY_A));
+    foreach ($rows as &$row) {
+      $raw = !empty($row['raw_data']) ? json_decode($row['raw_data'], true) : [];
+      $row['raw_stock'] = is_array($raw) && isset($raw['stock']) ? $raw['stock'] : '';
+      $row['raw_price'] = is_array($raw) && isset($raw['price']) ? $raw['price'] : '';
+      if (is_array($raw) && isset($raw['value'])) {
+        if (!empty($raw['field']) && $raw['field'] === 'available') $row['raw_stock'] = $raw['value'];
+        if (!empty($raw['field']) && $raw['field'] === 'price') $row['raw_price'] = $raw['value'];
+      }
+      unset($row['raw_data']);
+    }
+    return $rows;
+  }
+
+  private function prepare_rows_for_output(array $rows) {
     foreach ($rows as &$row) {
       $original = !empty($row['original_data']) ? json_decode($row['original_data'], true) : [];
       if (!empty($original['nodes']) && is_array($original['nodes'])) {
@@ -282,14 +349,15 @@ class WCSSD_JobStore {
     );
   }
 
-  public function report($job_db_id) {
+  public function report($job_db_id, $limit = 200) {
     global $wpdb;
 
     $sql = $wpdb->prepare(
-      "SELECT level,message,created_at FROM {$this->logs_table} WHERE job_id = %d ORDER BY id ASC",
-      (int)$job_db_id
+      "SELECT level,message,created_at FROM {$this->logs_table} WHERE job_id = %d ORDER BY id DESC LIMIT %d",
+      (int)$job_db_id,
+      max(1, min(1000, (int)$limit))
     );
-    $rows = $wpdb->get_results($sql, ARRAY_A);
+    $rows = array_reverse($wpdb->get_results($sql, ARRAY_A));
     $lines = [];
     foreach ($rows as $row) {
       $lines[] = '[' . strtoupper($row['level']) . '] ' . $row['created_at'] . ' ' . $row['message'];
@@ -369,6 +437,32 @@ class WCSSD_JobStore {
     $wpdb->delete($this->logs_table, ['job_id' => (int)$job['id']]);
     $wpdb->delete($this->items_table, ['job_id' => (int)$job['id']]);
     return (bool)$wpdb->delete($this->jobs_table, ['id' => (int)$job['id']]);
+  }
+
+  public function clear_items($job_db_id) {
+    global $wpdb;
+
+    return false !== $wpdb->delete($this->items_table, ['job_id' => (int)$job_db_id]);
+  }
+
+  public function cleanup_terminal_before($cutoff) {
+    global $wpdb;
+
+    $terminal = ['preview', 'completed', 'cancelled', 'rolled_back', 'rollback_partial', 'invalid', 'analysis_failed'];
+    $placeholders = implode(',', array_fill(0, count($terminal), '%s'));
+    $params = array_merge($terminal, [(string)$cutoff]);
+    $sql = $wpdb->prepare(
+      "SELECT id FROM {$this->jobs_table} WHERE status IN ({$placeholders}) AND updated_at < %s ORDER BY id ASC LIMIT 1000",
+      ...$params
+    );
+    $ids = array_map('intval', $wpdb->get_col($sql));
+    if (!$ids) return 0;
+
+    $id_list = implode(',', $ids);
+    $wpdb->query("DELETE FROM {$this->logs_table} WHERE job_id IN ({$id_list})");
+    $wpdb->query("DELETE FROM {$this->items_table} WHERE job_id IN ({$id_list})");
+    $wpdb->query("DELETE FROM {$this->jobs_table} WHERE id IN ({$id_list})");
+    return count($ids);
   }
 }
 // phpcs:enable WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.PreparedSQL.NotPrepared

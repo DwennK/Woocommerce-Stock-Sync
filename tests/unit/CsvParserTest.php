@@ -75,8 +75,10 @@ final class CsvParserTest extends TestCase {
     $this->assertCount(2, $result['errors']);
     $this->assertSame(2, $result['errors'][0]['line']);
     $this->assertSame('available', $result['errors'][0]['field']);
+    $this->assertSame('BAD-1', $result['errors'][0]['sku']);
     $this->assertSame(3, $result['errors'][1]['line']);
     $this->assertSame('price', $result['errors'][1]['field']);
+    $this->assertSame('BAD-2', $result['errors'][1]['sku']);
   }
 
   public function test_rejects_duplicate_skus_case_insensitively(): void {
