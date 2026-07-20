@@ -1,8 +1,11 @@
 {
   "plugins": [
-    "./wc-stock-sync-dwenn",
     "https://downloads.wordpress.org/plugin/woocommerce.latest-stable.zip"
   ],
+  "mappings": {
+    "wp-content/plugins/wc-stock-sync-dwenn": "./wc-stock-sync-dwenn"
+  },
+  "testsEnvironment": false,
   "config": {
     "WP_DEBUG": true,
     "WP_DEBUG_LOG": true,
