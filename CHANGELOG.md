@@ -6,6 +6,24 @@ Versions use SemVer: MAJOR.MINOR.PATCH.
 
 ---
 
+## [2.1.0] - 2026-07-20
+### Added
+- Added explicit valid-row imports that can skip malformed stock or price rows after confirmation while keeping duplicate and ambiguous SKUs blocking.
+- Added status filters, SKU search, pagination, and complete row-level CSV report exports.
+- Added background CSV analysis with temporary-file cleanup and Action Scheduler or WP-Cron recovery.
+- Added configurable 30-day job retention and manual job deletion.
+- Added WordPress/WooCommerce integration smoke coverage and PHP 7.4–8.3 syntax compatibility checks in CI.
+
+### Changed
+- Zero-stock warnings now use matched WooCommerce rows instead of every supplier row.
+- Technical log polling is capped to recent entries while detailed reports are generated on demand.
+- Bumped the plugin and database schema version to `2.1.0`.
+
+### Fixed
+- Invalid CSV rows are now shown first in the limited preview so validation errors remain visible in large imports.
+- Rollbacks with conflicts or failures now finish with a partial status instead of reporting complete success.
+- Detailed CSV exports neutralize spreadsheet formula prefixes from supplier-controlled values.
+
 ## [2.0.0] - 2026-07-19
 ### Added
 - Added strict row validation with line, field, raw value, duplicate SKU, and ambiguous WooCommerce SKU diagnostics.

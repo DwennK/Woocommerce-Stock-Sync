@@ -6,6 +6,7 @@ It is built for a simple workflow:
 - upload a CSV in wp-admin
 - validate every supplier row and preview the exact old-to-new changes
 - create a durable, resumable background job
+- analyze large CSV files outside the upload request
 - process products with Action Scheduler and live progress
 - optionally pre-zero selected categories before the import
 
@@ -19,6 +20,9 @@ It is built for a simple workflow:
 - Supports preview-only mode and explicit confirmation before live writes
 - Skips unchanged products and keeps rollback snapshots for completed imports
 - Keeps a recent per-user job history in wp-admin
+- Filters, searches, paginates, and exports the complete row-level preview
+- Can explicitly skip invalid value rows while keeping duplicate or ambiguous SKUs blocking
+- Removes terminal job data automatically after 30 days by default
 - Supports a fixed price adjustment with optional integer rounding
 - Supports pre-zero stock by selected product categories before sync
 - Auto-detects CSV delimiters: comma, semicolon, or tab
@@ -27,7 +31,7 @@ It is built for a simple workflow:
 
 ## Current Version
 
-- Plugin version: `2.0.0`
+- Plugin version: `2.1.0`
 
 ## Installation
 
@@ -61,6 +65,7 @@ Then activate it from the WordPress plugins screen.
    - chunk size
    - optional price adjustment
    - optional pre-zero categories
+   - optional exclusion of invalid value rows
 4. Review changed, unchanged, missing, and invalid rows in the preview.
 5. Confirm the exact changes to start the durable job.
 6. Watch progress or close the page and return later.
@@ -130,12 +135,20 @@ VAR-RED-S,0,59.00
 - Duplicate SKUs are reported as validation errors, including case-only duplicates
 - Ambiguous SKUs that match multiple WooCommerce records are blocked
 - Missing SKUs are counted and skipped
+- Invalid stock or price rows can be skipped only when that option is explicitly enabled
+- Duplicate and ambiguous SKUs always remain blocking
 
 ## Options
 
 ### Preview-only mode
 
 Builds the complete old-to-new diff without allowing changes to be applied.
+
+### Invalid row handling
+
+Strict mode blocks the import when any invalid value is found. The optional invalid-row exclusion mode keeps those rows unchanged and allows valid rows to be applied after an explicit confirmation. Duplicate and ambiguous SKUs cannot be bypassed.
+
+The detailed preview supports status filters, SKU search, pagination, and a complete semicolon-delimited CSV export.
 
 ### Price adjustment
 
@@ -172,11 +185,14 @@ For variable products, the plugin also sets each variation stock to `0`.
 
 - Uses one chunked SKU lookup query instead of querying product-by-product
 - Uses Action Scheduler with a WordPress Cron fallback for durable background processing
+- Runs CSV analysis through the same background scheduling layer instead of holding the upload request open
 - Uses dedicated job, item, and log tables instead of transient payloads
-- Does not keep the uploaded CSV permanently on disk
+- Keeps the uploaded CSV only until background analysis finishes, then deletes it
 - Includes nonce and capability checks on admin and AJAX actions
 - Keeps per-item before snapshots so completed imports can be rolled back
 - Uses a per-job lease to prevent overlapping batches
+- Deletes stale previews, completed, cancelled, invalid, and rollback jobs after 30 days by default; `wcssd_job_retention_days` can change the retention
+- Distinguishes complete rollbacks from partial rollbacks with conflicts
 
 ## Repository Layout
 
@@ -208,6 +224,15 @@ composer ci
 ```
 
 This runs PHP syntax checks, PHP_CodeSniffer with WordPress Coding Standards, PHPUnit, and the plugin/changelog/tag version consistency check.
+
+Run the WordPress/WooCommerce integration smoke test with Docker available:
+
+```bash
+npm ci --ignore-scripts
+npm run wp-env:start
+npm run test:integration
+npm run wp-env:stop
+```
 
 ### Create a WordPress-ready ZIP
 
