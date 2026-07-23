@@ -210,6 +210,9 @@ For variable products, the plugin also sets each variation stock to `0`.
 
 ### Run Tests
 
+The development toolchain requires PHP 8.4.1 or newer. The plugin itself is
+syntax-checked in CI on PHP 7.4 through PHP 8.5.
+
 Install development dependencies and run the PHPUnit suite from the repository root:
 
 ```bash
